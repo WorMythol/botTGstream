@@ -1,0 +1,32 @@
+# Telegram bot
+aiogram==3.7.0
+
+# Database
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+
+# HTTP
+aiohttp==3.9.5
+httpx==0.27.0
+
+# Scheduling
+apscheduler==3.10.4
+
+# Config / validation
+pydantic==2.7.1
+pydantic-settings==2.2.1
+
+# Templating
+jinja2==3.1.4
+
+# Encryption (API credentials at rest)
+cryptography==42.0.7
+
+# Logging
+structlog==24.1.0
+
+# Utilities
+python-dotenv==1.0.1
+aiofiles==23.2.1
+tenacity==8.3.0
