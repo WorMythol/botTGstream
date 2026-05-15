@@ -19,15 +19,31 @@ PLATFORM_EMOJI = {
 
 
 def stream_links_keyboard(platform_links: List[PlatformLink]) -> InlineKeyboardMarkup:
-    """Keyboard for a stream notification — one button per live platform."""
+    """Feature 10: Keyboard for a stream notification — watch buttons per platform.
+
+    For a single platform: one prominent "▶️ Watch" button.
+    For multiple platforms: one button per platform with platform name.
+    """
     builder = InlineKeyboardBuilder()
-    for link in platform_links:
+
+    if len(platform_links) == 1:
+        # Single platform — clean "Watch" button without repeating platform name
+        link = platform_links[0]
         emoji = PLATFORM_EMOJI.get(link.platform, "🔗")
         builder.button(
-            text=f"{emoji} Watch on {link.platform}",
+            text=f"{emoji} Watch",
             url=link.url,
         )
-    builder.adjust(1)
+    else:
+        # Multiple platforms — label each one
+        for link in platform_links:
+            emoji = PLATFORM_EMOJI.get(link.platform, "🔗")
+            builder.button(
+                text=f"{emoji} {link.platform}",
+                url=link.url,
+            )
+        builder.adjust(2)  # Two buttons per row for multi-platform
+
     return builder.as_markup()
 
 
@@ -106,4 +122,14 @@ def skip_keyboard(callback_data: str = "skip") -> InlineKeyboardMarkup:
     builder.button(text="Skip →", callback_data=callback_data)
     builder.button(text="❌ Cancel", callback_data="cancel")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def priority_keyboard(action_prefix: str = "priority") -> InlineKeyboardMarkup:
+    """Feature 9: Keyboard to select poll priority for a streamer."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔴 High (60s)", callback_data=f"{action_prefix}:3")
+    builder.button(text="🟡 Normal (5m)", callback_data=f"{action_prefix}:2")
+    builder.button(text="🟢 Low (10m)", callback_data=f"{action_prefix}:1")
+    builder.adjust(1)
     return builder.as_markup()

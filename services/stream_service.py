@@ -6,6 +6,7 @@ This is the heart of the system:
   - Triggers unified notifications (one message per streamer, all platforms)
   - Handles cooldown window to avoid duplicate alerts on short stream restarts
   - Detects new platforms going live mid-session → edits existing notifications
+  - Feature 1: sends "stream ended" notification when session closes
 """
 from __future__ import annotations
 
@@ -102,14 +103,25 @@ class StreamService:
         return stream
 
     async def _close_stream(self, stream: Stream) -> None:
-        cooldown = datetime.now(timezone.utc) + timedelta(seconds=settings.STREAM_COOLDOWN_SECONDS)
+        """End a stream session and send 'stream ended' notification (Feature 1)."""
+        now = datetime.now(timezone.utc)
+        cooldown = now + timedelta(seconds=settings.STREAM_COOLDOWN_SECONDS)
         await self._stream_repo.end_stream(stream.id, cooldown)
         # End all active platform streams
         for ps in stream.platform_streams:
             if ps.ended_at is None:
-                ps.ended_at = datetime.now(timezone.utc)
+                ps.ended_at = now
         await self._session.flush()
         logger.info("stream.closed", stream_id=stream.id)
+
+        # Feature 1: send stream-end notification
+        # Reload to get updated ended_at and peak_viewer_count
+        updated_stream = await self._stream_repo.get_with_details(stream.id)
+        if updated_stream:
+            try:
+                await self._notif.send_stream_end_notification(updated_stream)
+            except Exception as exc:
+                logger.warning("stream.end_notification_failed", stream_id=stream.id, error=str(exc))
 
     async def _update_stream(
         self,

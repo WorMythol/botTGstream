@@ -1,7 +1,8 @@
 """Notification repository."""
+from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,3 +55,25 @@ class NotificationRepository(BaseRepository[Notification]):
             .where(Notification.id == notification_id)
         )
         return result.scalar_one_or_none()
+
+    async def get_failed_for_retry(self, now: datetime) -> List[Notification]:
+        """Feature 2: Return FAILED notifications that are due for retry.
+
+        Only returns notifications with retry_after <= now and retry_count < MAX_RETRIES.
+        Channel is eagerly loaded to avoid MissingGreenlet.
+        """
+        result = await self.session.execute(
+            select(Notification)
+            .options(selectinload(Notification.channel))
+            .where(
+                and_(
+                    Notification.status == NotificationStatus.FAILED,
+                    Notification.retry_after.is_not(None),
+                    Notification.retry_after <= now,
+                    Notification.retry_count < 3,
+                )
+            )
+            .order_by(Notification.retry_after)
+            .limit(50)  # Process at most 50 retries per job run
+        )
+        return list(result.scalars().all())

@@ -30,3 +30,7 @@ structlog==24.1.0
 python-dotenv==1.0.1
 aiofiles==23.2.1
 tenacity==8.3.0
+
+# Feature 4: REST API layer
+fastapi==0.111.0
+uvicorn[standard]==0.29.0

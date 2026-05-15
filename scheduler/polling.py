@@ -5,6 +5,13 @@ Polling strategy per platform:
   Twitch   — respects rate-limit headers; skips poll cycle if rate-limited.
   VK       — simple periodic poll.
 
+Feature 9: Per-streamer poll priority.
+  Priority 3 (high)   — polled every ~60 seconds via high-priority job
+  Priority 2 (normal) — polled every POLL_INTERVAL_* (default 300s)
+  Priority 1 (low)    — polled every POLL_INTERVAL_* * 2 (default 600s)
+
+Feature 2: Retry job runs every 60 seconds, retries FAILED notifications.
+
 Each platform runs on its own scheduler job at the configured interval.
 """
 from __future__ import annotations
@@ -12,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Set
 
 import aiohttp
 import structlog
@@ -20,7 +27,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from db.database import get_session
-from db.models import Platform
+from db.models import Platform, Streamer
 from db.repositories.streamer_repo import PlatformAccountRepository, StreamerRepository
 from db.repositories.stream_repo import StreamRepository
 from integrations import TwitchIntegration, VKIntegration, YouTubeIntegration
@@ -36,6 +43,11 @@ logger = structlog.get_logger(__name__)
 _http_session: Optional[aiohttp.ClientSession] = None
 _twitch_client: Optional[TwitchIntegration] = None
 _bot_context: Optional["BotContext"] = None
+
+# Feature 9: track which streamer IDs have been covered by high-priority job
+# so normal job skips them in the same cycle (avoids double-polling)
+_high_priority_checked: Set[int] = set()
+_last_high_priority_run: Optional[datetime] = None
 
 
 def set_bot_context(ctx: "BotContext") -> None:
@@ -64,6 +76,8 @@ def get_twitch_client() -> TwitchIntegration:
 
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="UTC")
+
+    # Normal platform poll jobs
     scheduler.add_job(
         poll_youtube, "interval", seconds=settings.POLL_INTERVAL_YOUTUBE, id="poll_youtube",
         max_instances=1, coalesce=True,
@@ -76,7 +90,55 @@ def create_scheduler() -> AsyncIOScheduler:
         poll_vk, "interval", seconds=settings.POLL_INTERVAL_VK, id="poll_vk",
         max_instances=1, coalesce=True,
     )
+
+    # Feature 9: High-priority poll job — runs every 60 seconds for priority=3 streamers
+    scheduler.add_job(
+        poll_high_priority, "interval", seconds=60, id="poll_high_priority",
+        max_instances=1, coalesce=True,
+    )
+
+    # Feature 2: Retry failed notifications every 60 seconds
+    scheduler.add_job(
+        retry_notifications, "interval", seconds=60, id="retry_notifications",
+        max_instances=1, coalesce=True,
+    )
+
     return scheduler
+
+
+# ── Feature 9: High-priority poll ────────────────────────────────────────────
+
+async def poll_high_priority() -> None:
+    """Poll all streamers with poll_priority=3 every 60 seconds."""
+    global _high_priority_checked, _last_high_priority_run
+    _high_priority_checked = set()
+    _last_high_priority_run = datetime.now(timezone.utc)
+
+    async with get_session() as session:
+        streamer_repo = StreamerRepository(session)
+        all_streamers = await streamer_repo.get_active_streamers()
+        high_prio = [s for s in all_streamers if s.poll_priority >= 3]
+
+        if not high_prio:
+            return
+
+        account_repo = PlatformAccountRepository(session)
+        yt_client = YouTubeIntegration(settings.YOUTUBE_API_KEY, get_http_session())
+        vk_client = VKIntegration(settings.VK_ACCESS_TOKEN, settings.VK_API_VERSION, get_http_session())
+        results: Dict[int, Dict[Platform, StreamInfo]] = defaultdict(dict)
+
+        for streamer in high_prio:
+            _high_priority_checked.add(streamer.id)
+            for account in streamer.platform_accounts:
+                if not account.is_active:
+                    continue
+                result = await _check_account(account, get_http_session())
+                await _process_account_result(session, account, result, account_repo)
+                if result.is_live and result.stream:
+                    results[streamer.id][account.platform] = result.stream
+
+        await _process_stream_results(session, results, streamer_ids={s.id for s in high_prio})
+        logger.debug("poll.high_priority.done", count=len(high_prio))
 
 
 # ── Per-platform poll functions ───────────────────────────────────────────────
@@ -88,11 +150,18 @@ async def poll_youtube() -> None:
         account_repo = PlatformAccountRepository(session)
         streamers = await streamer_repo.get_active_streamers()
 
+        # Feature 9: skip high-priority streamers recently polled (<90s ago)
+        if _last_high_priority_run and (datetime.now(timezone.utc) - _last_high_priority_run).total_seconds() < 90:
+            streamers = [s for s in streamers if s.id not in _high_priority_checked]
+
+        # Feature 9: skip low-priority streamers every other cycle
+        normal_and_low = _filter_by_priority(streamers)
+
         yt_client = YouTubeIntegration(settings.YOUTUBE_API_KEY, get_http_session())
         total_quota = 0
         results: Dict[int, Dict[Platform, StreamInfo]] = defaultdict(dict)
 
-        for streamer in streamers:
+        for streamer in normal_and_low:
             for account in streamer.platform_accounts:
                 if account.platform != Platform.YOUTUBE or not account.is_active:
                     continue
@@ -143,6 +212,12 @@ async def poll_twitch() -> None:
         streamer_repo = StreamerRepository(session)
         account_repo = PlatformAccountRepository(session)
         streamers = await streamer_repo.get_active_streamers()
+
+        # Feature 9: skip high-priority (already covered) and low-priority filtering
+        if _last_high_priority_run and (datetime.now(timezone.utc) - _last_high_priority_run).total_seconds() < 90:
+            streamers = [s for s in streamers if s.id not in _high_priority_checked]
+        streamers = _filter_by_priority(streamers)
+
         results: Dict[int, Dict[Platform, StreamInfo]] = defaultdict(dict)
 
         for streamer in streamers:
@@ -175,6 +250,11 @@ async def poll_vk() -> None:
         streamer_repo = StreamerRepository(session)
         account_repo = PlatformAccountRepository(session)
         streamers = await streamer_repo.get_active_streamers()
+
+        if _last_high_priority_run and (datetime.now(timezone.utc) - _last_high_priority_run).total_seconds() < 90:
+            streamers = [s for s in streamers if s.id not in _high_priority_checked]
+        streamers = _filter_by_priority(streamers)
+
         vk_client = VKIntegration(settings.VK_ACCESS_TOKEN, settings.VK_API_VERSION, get_http_session())
         results: Dict[int, Dict[Platform, StreamInfo]] = defaultdict(dict)
 
@@ -192,6 +272,25 @@ async def poll_vk() -> None:
 
         await _process_stream_results(session, results)
         logger.info("poll.vk.done")
+
+
+# ── Feature 2: Retry failed notifications ────────────────────────────────────
+
+async def retry_notifications() -> None:
+    """Feature 2: Retry FAILED notifications with exponential backoff."""
+    if _bot_context is None:
+        return
+    async with get_session() as session:
+        notif_service = NotificationService(
+            session=session,
+            send_fn=_bot_context.send_notification,
+            edit_fn=_bot_context.edit_notification,
+            delete_fn=_bot_context.delete_notification,
+            vk_send_fn=getattr(_bot_context, "send_vk_notification", None),
+        )
+        count = await notif_service.retry_failed_notifications()
+        if count > 0:
+            logger.info("retry_notifications.done", retried=count)
 
 
 # ── Manual trigger ────────────────────────────────────────────────────────────
@@ -226,6 +325,24 @@ async def trigger_poll_for_streamer(streamer_id: int) -> Dict[str, bool]:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _filter_by_priority(streamers: list) -> list:
+    """Feature 9: Filter out low-priority streamers on alternating cycles.
+
+    Low-priority (1) streamers are polled every other call using a simple
+    time-based modulus: if the current minute is even, skip them.
+    This effectively halves their poll frequency without extra jobs.
+    """
+    minute = datetime.now(timezone.utc).minute
+    result = []
+    for s in streamers:
+        priority = getattr(s, "poll_priority", 2)
+        if priority == 1 and minute % 2 != 0:
+            # Low priority: skip every other cycle
+            continue
+        result.append(s)
+    return result
+
 
 async def _check_account(account, http: aiohttp.ClientSession) -> PlatformCheckResult:
     if account.platform == Platform.YOUTUBE:
@@ -276,6 +393,7 @@ async def _process_account_result(
 async def _process_stream_results(
     session,
     results: Dict[int, Dict[Platform, StreamInfo]],
+    streamer_ids: Optional[Set[int]] = None,
 ) -> None:
     """For each streamer, get all their live platforms and process together."""
     if _bot_context is None:
@@ -286,13 +404,18 @@ async def _process_stream_results(
         send_fn=_bot_context.send_notification,
         edit_fn=_bot_context.edit_notification,
         delete_fn=_bot_context.delete_notification,
+        vk_send_fn=getattr(_bot_context, "send_vk_notification", None),
     )
     stream_service = StreamService(session=session, notification_service=notif_service)
 
     # Also include streamers with NO live results (need to close active streams)
-    streamer_repo = StreamerRepository(session)
-    all_active = await streamer_repo.get_active_streamers()
-    all_streamer_ids = {s.id for s in all_active}
+    if streamer_ids is not None:
+        # Specific subset (high-priority job)
+        all_streamer_ids = streamer_ids
+    else:
+        streamer_repo = StreamerRepository(session)
+        all_active = await streamer_repo.get_active_streamers()
+        all_streamer_ids = {s.id for s in all_active}
 
     for streamer_id in all_streamer_ids:
         live_map = results.get(streamer_id, {})

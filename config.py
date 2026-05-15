@@ -39,6 +39,23 @@ class Settings(BaseSettings):
     # 32-byte URL-safe base64 key; generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     ENCRYPTION_KEY: str = ""
 
+    # ── Feature 4: REST API ──────────────────────────────────────────────────
+    API_SECRET_KEY: str = ""        # X-Api-Key header for REST endpoints
+
+    # ── Webhook (Feature 5) ───────────────────────────────────────────────────
+    # Set WEBHOOK_URL to enable webhook mode instead of long polling.
+    # Example: https://yourdomain.com/webhook
+    WEBHOOK_URL: str = ""           # empty = use long polling
+    WEBHOOK_HOST: str = "0.0.0.0"
+    WEBHOOK_PORT: int = 8443
+    WEBHOOK_SECRET: str = ""        # Telegram webhook secret token
+
+    # ── VK Bot API (Feature 12) ───────────────────────────────────────────────
+    # Community bot token (different from VK_ACCESS_TOKEN used for reading streams)
+    # vk.com/dev → Community management → API usage → Key for community messages
+    VK_GROUP_TOKEN: str = ""
+    VK_GROUP_ID: int = 0            # numeric group ID (positive)
+
     # ── Logging ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # "json" or "text"

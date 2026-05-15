@@ -1,7 +1,16 @@
-"""Admin handlers: streamer CRUD, channel management, health, test notifications."""
+"""Admin handlers: streamer CRUD, channel management, health, test notifications.
+
+Features:
+  - Feature 7:  Template preview before saving (assign_channel_template_input)
+  - Feature 8:  /export — CSV analytics export
+  - Feature 9:  Poll priority management via set_priority callback
+  - Feature 11: Enhanced /health command with uptime + Twitch token status
+"""
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -10,12 +19,12 @@ import structlog
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.keyboards.inline import (
     back_keyboard, channels_list_keyboard, confirm_keyboard,
-    platforms_keyboard, skip_keyboard, streamer_actions_keyboard,
-    streamers_list_keyboard,
+    platforms_keyboard, priority_keyboard, skip_keyboard,
+    streamer_actions_keyboard, streamers_list_keyboard,
 )
 from bot.states import (
     AddChannelStates, AddStreamerStates, AssignChannelStates,
@@ -28,7 +37,7 @@ from scheduler.polling import trigger_poll_for_streamer
 from services.analytics_service import AnalyticsService
 from services.channel_service import ChannelService
 from services.streamer_service import StreamerService
-from services.template_service import validate_template
+from services.template_service import preview_template, validate_template
 
 logger = structlog.get_logger(__name__)
 router = Router()
@@ -74,12 +83,16 @@ async def cb_view_streamer(callback: CallbackQuery, db_user: User) -> None:
     elif streamer.is_paused:
         status = "⏸ Paused"
 
+    priority_labels = {1: "🟢 Low", 2: "🟡 Normal", 3: "🔴 High"}
+    priority_str = priority_labels.get(getattr(streamer, "poll_priority", 2), "🟡 Normal")
+
     platforms = ", ".join(a.platform.value for a in streamer.platform_accounts) or "None"
     channels = ", ".join(a.channel.title for a in streamer.channel_assignments if a.is_active) or "None"
 
     text = (
         f"📡 *{streamer.display_name}*\n"
         f"Status: {status}\n"
+        f"Poll priority: {priority_str}\n"
         f"Platforms: {platforms}\n"
         f"Channels: {channels}\n"
     )
@@ -148,7 +161,7 @@ async def add_streamer_platform_choice(callback: CallbackQuery, state: FSMContex
             f"Use /assign_channel to link them to notification channels.",
             parse_mode="Markdown",
         )
-        await callback.answer()  # FIX m-2: was missing on "done" path
+        await callback.answer()
         return
 
     await state.update_data(current_platform=platform_str)
@@ -246,7 +259,6 @@ async def cb_confirm_delete_streamer(callback: CallbackQuery, db_user: User) -> 
 
 
 # ── Streamer action callbacks (from streamer_actions_keyboard) ────────────────
-# FIX M-2: these buttons existed without handlers — users saw infinite spinner
 
 @router.callback_query(F.data.startswith("streamer_stats:"))
 async def cb_streamer_stats(callback: CallbackQuery, db_user: User) -> None:
@@ -296,7 +308,8 @@ async def cb_streamer_channels(callback: CallbackQuery, db_user: User) -> None:
             ch = a.channel
             viewers = f"min {a.min_viewer_count}👥" if a.min_viewer_count else "no threshold"
             tmpl = "Custom template" if a.message_template else "Default template"
-            lines.append(f"• *{ch.title}* — {tmpl}, {viewers}")
+            end_notif = "✅ end notif" if getattr(a, "send_end_notification", True) else "❌ end notif"
+            lines.append(f"• *{ch.title}* — {tmpl}, {viewers}, {end_notif}")
         text = f"📢 *{streamer.display_name}* — channels:\n\n" + "\n".join(lines)
     await callback.message.edit_text(text, parse_mode="Markdown",
                                      reply_markup=back_keyboard("back_to_streamers"))
@@ -312,6 +325,92 @@ async def cb_back_to_streamers(callback: CallbackQuery, db_user: User) -> None:
     await callback.message.edit_text("📋 *All streamers* — tap to manage:",
                                      reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
+
+
+# ── Feature 9: Set poll priority ──────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("streamer_test:"))
+async def cb_streamer_test_redirect(callback: CallbackQuery, db_user: User, state: FSMContext) -> None:
+    """Re-entry point from streamer action keyboard — starts test notification flow."""
+    if not _admin_only(db_user):
+        await callback.answer("⛔ Admins only.", show_alert=True)
+        return
+    streamer_id = int(callback.data.split(":")[1])
+    await state.update_data(streamer_id=streamer_id)
+    await state.set_state(TestNotificationStates.waiting_channel)
+    async with get_session() as session:
+        svc = ChannelService(session)
+        channels = await svc.list_channels()
+    if not channels:
+        await callback.message.edit_text("No channels registered. Use /add_channel first.")
+        await state.clear()
+        await callback.answer()
+        return
+    kb = channels_list_keyboard(channels, "test_notif_channel")
+    await callback.message.edit_text(
+        "Select a *channel* to send the test to:", reply_markup=kb, parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(Command("set_priority"))
+async def cmd_set_priority(message: Message, db_user: User) -> None:
+    """Feature 9: /set_priority — change poll priority for a streamer."""
+    if not _admin_only(db_user):
+        await message.answer("⛔ Admins only.")
+        return
+    async with get_session() as session:
+        svc = StreamerService(session)
+        streamers = await svc.list_streamers()
+    if not streamers:
+        await message.answer("No streamers configured.")
+        return
+    kb = streamers_list_keyboard(streamers, "priority_select")
+    await message.answer(
+        "🎚 *Set Poll Priority*\n\nSelect a streamer:",
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data.startswith("priority_select:"))
+async def cb_priority_streamer_selected(callback: CallbackQuery, db_user: User) -> None:
+    if not _admin_only(db_user):
+        await callback.answer("⛔ Admins only.", show_alert=True)
+        return
+    streamer_id = int(callback.data.split(":")[1])
+    async with get_session() as session:
+        svc = StreamerService(session)
+        streamer = await svc.get_streamer(streamer_id)
+    if not streamer:
+        await callback.answer("Not found.", show_alert=True)
+        return
+    current = getattr(streamer, "poll_priority", 2)
+    labels = {1: "🟢 Low (10m)", 2: "🟡 Normal (5m)", 3: "🔴 High (60s)"}
+    await callback.message.edit_text(
+        f"📡 *{streamer.display_name}*\nCurrent priority: {labels.get(current, 'Normal')}\n\nSelect new priority:",
+        reply_markup=priority_keyboard(f"priority_set:{streamer_id}"),
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("priority_set:"))
+async def cb_priority_set(callback: CallbackQuery, db_user: User) -> None:
+    if not _admin_only(db_user):
+        await callback.answer("⛔ Admins only.", show_alert=True)
+        return
+    # Format: priority_set:{streamer_id}:{priority}
+    parts = callback.data.split(":")
+    streamer_id = int(parts[1])
+    priority = int(parts[2])
+    async with get_session() as session:
+        svc = StreamerService(session)
+        await svc.set_priority(streamer_id, priority)
+    labels = {1: "🟢 Low (10m)", 2: "🟡 Normal (5m)", 3: "🔴 High (60s)"}
+    await callback.answer(f"Priority set to {labels.get(priority, priority)}", show_alert=True)
+    await callback.message.edit_text(f"✅ Poll priority updated to *{labels.get(priority)}*.",
+                                     parse_mode="Markdown")
 
 
 # ── Add channel ────────────────────────────────────────────────────────────────
@@ -382,6 +481,7 @@ async def cmd_list_channels(message: Message, db_user: User) -> None:
     lines = [
         f"• *{ch.title}* (`{ch.telegram_id}`)"
         + (f" @{ch.username}" if ch.username else "")
+        + (f" | VK peer: `{ch.vk_peer_id}`" if ch.vk_peer_id else "")
         for ch in channels
     ]
     await message.answer("📢 *Registered channels:*\n" + "\n".join(lines), parse_mode="Markdown")
@@ -451,15 +551,33 @@ async def assign_channel_skip_template(callback: CallbackQuery, state: FSMContex
 
 @router.message(AssignChannelStates.waiting_template)
 async def assign_channel_template_input(message: Message, state: FSMContext) -> None:
+    """Feature 7: Validate template and show preview before saving."""
     template = message.text.strip()
     err = validate_template(template)
     if err:
-        await message.answer(f"❌ Invalid template: {err}\n\nTry again:")
+        await message.answer(f"❌ Invalid template syntax: `{err}`\n\nFix it and try again:",
+                              parse_mode="Markdown")
         return
-    await state.update_data(template=template)
+
+    # Feature 7: render preview with sample data
+    try:
+        data = await state.get_data()
+        # Try to get streamer name for preview
+        async with get_session() as session:
+            svc = StreamerService(session)
+            streamer = await svc.get_streamer(data.get("streamer_id", 0))
+        streamer_name = streamer.display_name if streamer else "StreamerName"
+        rendered_preview = preview_template(template, streamer_name=streamer_name)
+    except Exception:
+        rendered_preview = preview_template(template)
+
+    await state.update_data(template=template, preview_shown=True)
     await state.set_state(AssignChannelStates.waiting_min_viewers)
+
     await message.answer(
-        "Enter *minimum viewer count* (0 = no threshold):",
+        f"✅ Template valid! *Preview:*\n\n{rendered_preview}\n\n"
+        f"─────────────────────\n"
+        f"Now enter *minimum viewer count* (0 = no threshold):",
         reply_markup=skip_keyboard("assign_skip_viewers"),
         parse_mode="Markdown",
     )
@@ -496,7 +614,8 @@ async def _complete_assignment(msg, state: FSMContext, min_viewers: int) -> None
     await msg.answer(
         f"✅ Assignment created!\n"
         f"Min viewers: {min_viewers if min_viewers else 'None'}\n"
-        f"Template: {'Custom' if data.get('template') else 'Default'}",
+        f"Template: {'Custom' if data.get('template') else 'Default'}\n"
+        f"End notifications: ✅ enabled",
         parse_mode="Markdown",
     )
 
@@ -527,7 +646,7 @@ async def test_notif_streamer_selected(callback: CallbackQuery, state: FSMContex
     async with get_session() as session:
         svc = ChannelService(session)
         channels = await svc.list_channels()
-    # FIX m-3: guard against empty channel list — user was stuck with no buttons
+    # FIX m-3: guard against empty channel list
     if not channels:
         await callback.message.edit_text("No channels registered. Use /add_channel first.")
         await state.clear()
@@ -603,7 +722,7 @@ async def cmd_poll_now(message: Message, db_user: User) -> None:
     await message.answer(text, parse_mode="Markdown")
 
 
-# ── System health ─────────────────────────────────────────────────────────────
+# ── Feature 11: Enhanced /health command ─────────────────────────────────────
 
 @router.message(Command("health"))
 async def cmd_health(message: Message, db_user: User) -> None:
@@ -612,6 +731,8 @@ async def cmd_health(message: Message, db_user: User) -> None:
         return
     from sqlalchemy import select
     from db.models import Platform, PollingState
+    from bot.main import get_uptime_seconds
+    from scheduler.polling import get_twitch_client
 
     async with get_session() as session:
         result = await session.execute(select(PollingState))
@@ -622,16 +743,41 @@ async def cmd_health(message: Message, db_user: User) -> None:
     now = datetime.now(timezone.utc)
     lines = ["🏥 *System Health*\n"]
 
+    # Feature 11: Bot uptime
+    uptime_sec = get_uptime_seconds()
+    if uptime_sec is not None:
+        hours = int(uptime_sec // 3600)
+        minutes = int((uptime_sec % 3600) // 60)
+        lines.append(f"🤖 Bot uptime: {hours}h {minutes}m\n")
+
     # Platform poll states
     for platform in Platform:
         ps = states.get(platform)
         if ps:
             last = ps.last_poll_at
-            ago = f"{int((now - last).total_seconds() / 60)}m ago" if last else "never"
+            if last:
+                secs_ago = int((now - last).total_seconds())
+                if secs_ago < 60:
+                    ago = f"{secs_ago}s ago"
+                else:
+                    ago = f"{secs_ago // 60}m ago"
+            else:
+                ago = "never"
             rate_limited = ps.rate_limited_until and ps.rate_limited_until > now
             rl_str = f" ⚠️ Rate limited until {ps.rate_limited_until:%H:%M}" if rate_limited else ""
-            yt_quota = f" | Quota: {ps.youtube_quota_used}/{settings.YOUTUBE_DAILY_QUOTA_LIMIT}" if platform == Platform.YOUTUBE else ""
-            lines.append(f"• *{platform.value.upper()}*: last poll {ago}{yt_quota}{rl_str}")
+            yt_quota = (
+                f" | Quota: {ps.youtube_quota_used}/{settings.YOUTUBE_DAILY_QUOTA_LIMIT}"
+                if platform == Platform.YOUTUBE else ""
+            )
+            # Feature 11: Twitch token status
+            twitch_token_str = ""
+            if platform == Platform.TWITCH and ps.twitch_token_expires_at:
+                remaining = (ps.twitch_token_expires_at - now).total_seconds()
+                if remaining > 0:
+                    twitch_token_str = f" | Token: {int(remaining // 3600)}h left"
+                else:
+                    twitch_token_str = " | Token: ⚠️ expired"
+            lines.append(f"• *{platform.value.upper()}*: last poll {ago}{yt_quota}{twitch_token_str}{rl_str}")
         else:
             lines.append(f"• *{platform.value.upper()}*: no poll data")
 
@@ -640,7 +786,91 @@ async def cmd_health(message: Message, db_user: User) -> None:
     lines.append(f"📡 Streams last 7d: {global_stats.streams_last_7_days}")
     lines.append(f"📨 Total notifications: {global_stats.total_notifications}")
 
+    # Webhook / polling mode
+    mode = "Webhook" if settings.WEBHOOK_URL else "Long polling"
+    lines.append(f"\n🔌 Mode: {mode}")
+
     await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+# ── Feature 8: CSV export ─────────────────────────────────────────────────────
+
+@router.message(Command("export"))
+async def cmd_export(message: Message, db_user: User) -> None:
+    """Feature 8: /export — download stream history as CSV.
+
+    Usage: /export [days=30]
+    Example: /export 7 — export last 7 days
+    """
+    if not _admin_only(db_user):
+        await message.answer("⛔ Admins only.")
+        return
+
+    # Parse optional days argument
+    args = message.text.split()
+    try:
+        days = int(args[1]) if len(args) > 1 else 30
+        days = max(1, min(days, 365))
+    except ValueError:
+        days = 30
+
+    await message.answer(f"📤 Generating CSV for last {days} days...")
+
+    from datetime import timedelta
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from db.models import Stream, Streamer, PlatformStream, StreamStatus
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Stream)
+            .options(
+                selectinload(Stream.streamer),
+                selectinload(Stream.platform_streams),
+            )
+            .where(Stream.started_at >= cutoff)
+            .order_by(Stream.started_at.desc())
+        )
+        streams = list(result.scalars().all())
+
+    if not streams:
+        await message.answer(f"No streams found in the last {days} days.")
+        return
+
+    # Build CSV in memory
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=[
+        "stream_id", "streamer", "status", "started_at", "ended_at",
+        "duration_min", "peak_viewers", "platforms", "notifications_sent",
+    ])
+    writer.writeheader()
+
+    for s in streams:
+        duration_min = None
+        if s.started_at and s.ended_at:
+            duration_min = round((s.ended_at - s.started_at).total_seconds() / 60, 1)
+        platforms = ", ".join(sorted({ps.platform.value for ps in (s.platform_streams or [])}))
+        writer.writerow({
+            "stream_id": s.id,
+            "streamer": s.streamer.display_name if s.streamer else "",
+            "status": s.status.value,
+            "started_at": s.started_at.strftime("%Y-%m-%d %H:%M:%S") if s.started_at else "",
+            "ended_at": s.ended_at.strftime("%Y-%m-%d %H:%M:%S") if s.ended_at else "",
+            "duration_min": duration_min or "",
+            "peak_viewers": s.peak_viewer_count or "",
+            "platforms": platforms,
+            "notifications_sent": "",  # avoid extra query for now
+        })
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # UTF-8 BOM for Excel
+    filename = f"streams_{datetime.now(timezone.utc).strftime('%Y%m%d')}_last{days}d.csv"
+
+    await message.answer_document(
+        document=BufferedInputFile(csv_bytes, filename=filename),
+        caption=f"📊 Stream history: {len(streams)} records, last {days} days",
+    )
 
 
 # ── Update API key ─────────────────────────────────────────────────────────────

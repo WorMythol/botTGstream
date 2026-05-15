@@ -85,6 +85,18 @@ class StreamerService:
     async def list_streamers_for_user(self, user_id: int) -> List[Streamer]:
         return await self._repo.get_for_user(user_id)
 
+    # ── Feature 9: Poll priority ──────────────────────────────────────────────
+
+    async def set_priority(self, streamer_id: int, priority: int) -> bool:
+        """Set poll priority (1=low, 2=normal, 3=high). Returns False if not found."""
+        streamer = await self._repo.get(streamer_id)
+        if streamer is None:
+            return False
+        streamer.poll_priority = max(1, min(3, priority))
+        await self._session.flush()
+        logger.info("streamer.priority_set", streamer_id=streamer_id, priority=priority)
+        return True
+
     # ── Pause / resume ────────────────────────────────────────────────────────
 
     async def pause(self, streamer_id: int) -> bool:

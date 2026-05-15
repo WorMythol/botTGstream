@@ -6,6 +6,7 @@ usernames) is sanitised via `md_escape` before insertion to avoid parse errors.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import structlog
@@ -22,6 +23,13 @@ DEFAULT_TEMPLATE = """\
 Watch now:
 {% for link in platform_links %}▶️ [{{ link.platform | title }}]({{ link.url }})
 {% endfor %}"""
+
+# Feature 1: stream end template
+DEFAULT_END_TEMPLATE = """\
+⚫ *{{ streamer_name }}* finished the stream
+
+{% if duration_str %}⏱ Duration: {{ duration_str }}{% endif %}
+{% if peak_viewers %}👥 Peak viewers: {{ peak_viewers | format_viewers }}{% endif %}"""
 
 _jinja_env = Environment(undefined=StrictUndefined, autoescape=False)
 
@@ -45,6 +53,16 @@ def _format_viewers(count: int) -> str:
     if count >= 1_000:
         return f"{count / 1_000:.1f}K"
     return str(count)
+
+
+def _format_duration(seconds: float) -> str:
+    """Format duration in seconds to human-readable string."""
+    total = int(seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 _jinja_env.filters["format_viewers"] = _format_viewers
@@ -93,3 +111,46 @@ def render_template(
         # Fallback to default
         tmpl = _jinja_env.from_string(DEFAULT_TEMPLATE)
         return tmpl.render(**context).strip()
+
+
+def render_end_template(
+    streamer_name: str,
+    started_at: Optional[datetime],
+    ended_at: Optional[datetime],
+    peak_viewers: Optional[int],
+) -> str:
+    """Feature 1: Render stream-end notification message."""
+    duration_str = None
+    if started_at and ended_at:
+        seconds = (ended_at - started_at).total_seconds()
+        duration_str = _format_duration(seconds)
+
+    context = {
+        "streamer_name": md_escape(streamer_name),
+        "duration_str": duration_str,
+        "peak_viewers": peak_viewers,
+    }
+    try:
+        tmpl = _jinja_env.from_string(DEFAULT_END_TEMPLATE)
+        return tmpl.render(**context).strip()
+    except Exception as exc:
+        logger.warning("end_template.render_failed", error=str(exc))
+        return f"⚫ *{md_escape(streamer_name)}* finished the stream"
+
+
+def preview_template(
+    template_str: str,
+    streamer_name: str = "StreamerName",
+) -> str:
+    """Feature 7: Render template with sample data for preview before saving."""
+    sample_links = [
+        PlatformLink(platform="YouTube", url="https://youtube.com/watch?v=dQw4w9WgXcQ"),
+        PlatformLink(platform="Twitch", url="https://twitch.tv/example"),
+    ]
+    return render_template(
+        template_str=template_str,
+        streamer_name=streamer_name,
+        stream_title="Sample Stream Title",
+        viewer_count=1337,
+        platform_links=sample_links,
+    )

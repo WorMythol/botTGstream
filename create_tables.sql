@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS streamers (
     display_name            VARCHAR(255)    NOT NULL,
     is_active               BOOLEAN         NOT NULL DEFAULT TRUE,
     is_paused               BOOLEAN         NOT NULL DEFAULT FALSE,
+    poll_priority           INT             NOT NULL DEFAULT 2,   -- Feature 9: 1=low, 2=normal, 3=high
     consecutive_errors      INT             NOT NULL DEFAULT 0,
     max_consecutive_errors  INT             NOT NULL DEFAULT 5,
     auto_disabled_at        TIMESTAMPTZ,
@@ -42,15 +43,15 @@ CREATE TABLE IF NOT EXISTS platform_accounts (
     id                          SERIAL PRIMARY KEY,
     streamer_id                 INT             NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
     platform                    platform        NOT NULL,
-    platform_id                 VARCHAR(255)    NOT NULL,   -- channel/login/group ID
-    platform_url                VARCHAR(500)    NOT NULL,   -- исходная ссылка от админа
+    platform_id                 VARCHAR(255)    NOT NULL,
+    platform_url                VARCHAR(500)    NOT NULL,
     platform_username           VARCHAR(255),
     is_active                   BOOLEAN         NOT NULL DEFAULT TRUE,
     last_checked_at             TIMESTAMPTZ,
     last_error                  TEXT,
     consecutive_errors          INT             NOT NULL DEFAULT 0,
     is_live                     BOOLEAN         NOT NULL DEFAULT FALSE,
-    current_stream_platform_id  VARCHAR(255),               -- кешированный ID активного стрима
+    current_stream_platform_id  VARCHAR(255),
     CONSTRAINT uq_streamer_platform UNIQUE (streamer_id, platform)
 );
 
@@ -62,18 +63,20 @@ CREATE TABLE IF NOT EXISTS telegram_channels (
     title       VARCHAR(255)    NOT NULL,
     is_active   BOOLEAN         NOT NULL DEFAULT TRUE,
     added_by    BIGINT          REFERENCES users(id),
-    added_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    added_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    vk_peer_id  BIGINT                                  -- Feature 12: VK peer ID for cross-posting
 );
 
 -- ── Привязка стример → канал ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS streamer_channel_assignments (
-    id                  SERIAL PRIMARY KEY,
-    streamer_id         INT     NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
-    channel_id          INT     NOT NULL REFERENCES telegram_channels(id) ON DELETE CASCADE,
-    message_template    TEXT,                       -- Jinja2 шаблон (NULL = дефолтный)
-    min_viewer_count    INT     NOT NULL DEFAULT 0, -- порог зрителей
-    is_active           BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id                      SERIAL PRIMARY KEY,
+    streamer_id             INT     NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
+    channel_id              INT     NOT NULL REFERENCES telegram_channels(id) ON DELETE CASCADE,
+    message_template        TEXT,
+    min_viewer_count        INT     NOT NULL DEFAULT 0,
+    send_end_notification   BOOLEAN NOT NULL DEFAULT TRUE,    -- Feature 1
+    is_active               BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_streamer_channel UNIQUE (streamer_id, channel_id)
 );
 
@@ -89,12 +92,12 @@ CREATE TABLE IF NOT EXISTS streamer_user_assignments (
 -- ── Стримы (сессии вещания) ───────────────────────────────────
 CREATE TABLE IF NOT EXISTS streams (
     id                      SERIAL PRIMARY KEY,
-    streamer_id             INT         NOT NULL REFERENCES streamers(id) ON DELETE CASCADE, -- FIX C-4
+    streamer_id             INT         NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
     status                  streamstatus NOT NULL DEFAULT 'live',
     started_at              TIMESTAMPTZ NOT NULL,
     ended_at                TIMESTAMPTZ,
     notification_sent_at    TIMESTAMPTZ,
-    cooldown_until          TIMESTAMPTZ,            -- до этого времени не создавать новую сессию
+    cooldown_until          TIMESTAMPTZ,
     peak_viewer_count       INT
 );
 
@@ -120,24 +123,28 @@ CREATE TABLE IF NOT EXISTS notifications (
     stream_id           INT                 NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
     channel_id          INT                 NOT NULL REFERENCES telegram_channels(id),
     delivery_platform   notificationplatform NOT NULL DEFAULT 'telegram',
-    telegram_message_id BIGINT,                     -- для редактирования/удаления
+    telegram_message_id BIGINT,
     status              notificationstatus  NOT NULL DEFAULT 'pending',
     sent_at             TIMESTAMPTZ,
     edited_at           TIMESTAMPTZ,
     error_message       TEXT,
-    rendered_text       TEXT,                       -- снапшот отправленного текста
-    is_photo_message    BOOLEAN     NOT NULL DEFAULT FALSE, -- для корректного редактирования
-    reactions           JSONB                       -- реакции Telegram
+    rendered_text       TEXT,
+    is_photo_message    BOOLEAN     NOT NULL DEFAULT FALSE,
+    reactions           JSONB,
+    retry_count         INT         NOT NULL DEFAULT 0,    -- Feature 2
+    retry_after         TIMESTAMPTZ                        -- Feature 2: next retry timestamp
 );
 
 CREATE INDEX IF NOT EXISTS ix_notifications_stream_channel ON notifications(stream_id, channel_id);
+CREATE INDEX IF NOT EXISTS ix_notifications_retry ON notifications(status, retry_after)
+    WHERE status = 'failed' AND retry_after IS NOT NULL;  -- Feature 2: fast retry lookup
 
 -- ── API-ключи (зашифрованные) ─────────────────────────────────
 CREATE TABLE IF NOT EXISTS api_credentials (
     id          SERIAL PRIMARY KEY,
     platform    platform        NOT NULL,
-    key_name    VARCHAR(100)    NOT NULL,    -- 'api_key', 'client_secret' и т.д.
-    key_value   TEXT            NOT NULL,    -- Fernet-зашифрованное значение
+    key_name    VARCHAR(100)    NOT NULL,
+    key_value   TEXT            NOT NULL,
     expires_at  TIMESTAMPTZ,
     is_active   BOOLEAN         NOT NULL DEFAULT TRUE,
     updated_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
@@ -172,3 +179,14 @@ CREATE TABLE IF NOT EXISTS polling_state (
 INSERT INTO polling_state (platform) VALUES ('youtube') ON CONFLICT DO NOTHING;
 INSERT INTO polling_state (platform) VALUES ('twitch')  ON CONFLICT DO NOTHING;
 INSERT INTO polling_state (platform) VALUES ('vk')      ON CONFLICT DO NOTHING;
+
+-- ============================================================
+-- Миграция: добавить новые колонки в существующую БД
+-- (выполнить только если таблицы уже существуют)
+-- ============================================================
+-- ALTER TABLE streamers ADD COLUMN IF NOT EXISTS poll_priority INT NOT NULL DEFAULT 2;
+-- ALTER TABLE telegram_channels ADD COLUMN IF NOT EXISTS vk_peer_id BIGINT;
+-- ALTER TABLE streamer_channel_assignments ADD COLUMN IF NOT EXISTS send_end_notification BOOLEAN NOT NULL DEFAULT TRUE;
+-- ALTER TABLE notifications ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
+-- ALTER TABLE notifications ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ;
+-- CREATE INDEX IF NOT EXISTS ix_notifications_retry ON notifications(status, retry_after) WHERE status = 'failed' AND retry_after IS NOT NULL;

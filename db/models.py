@@ -83,6 +83,9 @@ class Streamer(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Feature 9: polling priority (1=low/10min, 2=normal/5min, 3=high/1min)
+    poll_priority: Mapped[int] = mapped_column(Integer, default=2)
+
     # Error tracking for auto-disable
     consecutive_errors: Mapped[int] = mapped_column(Integer, default=0)
     max_consecutive_errors: Mapped[int] = mapped_column(Integer, default=5)
@@ -149,6 +152,9 @@ class TelegramChannel(Base):
     added_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Feature 12: VK peer_id for cross-posting to VK (None = no VK delivery)
+    vk_peer_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
     assignments: Mapped[List["StreamerChannelAssignment"]] = relationship(back_populates="channel")
 
 
@@ -170,6 +176,9 @@ class StreamerChannelAssignment(Base):
 
     # Feature: viewer threshold — don't notify if viewer count below this
     min_viewer_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Feature 1: send a "stream ended" notification when the session closes
+    send_end_notification: Mapped[bool] = mapped_column(Boolean, default=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -277,6 +286,10 @@ class Notification(Base):
 
     # Telegram reactions (updated periodically if API supports)
     reactions: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    # Feature 2: retry support for failed deliveries
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    retry_after: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     stream: Mapped["Stream"] = relationship(back_populates="notifications")
     channel: Mapped["TelegramChannel"] = relationship()
