@@ -148,6 +148,7 @@ async def add_streamer_platform_choice(callback: CallbackQuery, state: FSMContex
             f"Use /assign_channel to link them to notification channels.",
             parse_mode="Markdown",
         )
+        await callback.answer()  # FIX m-2: was missing on "done" path
         return
 
     await state.update_data(current_platform=platform_str)
@@ -241,6 +242,75 @@ async def cb_confirm_delete_streamer(callback: CallbackQuery, db_user: User) -> 
         await callback.message.edit_text("✅ Streamer deleted.")
     else:
         await callback.message.edit_text("❌ Streamer not found.")
+    await callback.answer()
+
+
+# ── Streamer action callbacks (from streamer_actions_keyboard) ────────────────
+# FIX M-2: these buttons existed without handlers — users saw infinite spinner
+
+@router.callback_query(F.data.startswith("streamer_stats:"))
+async def cb_streamer_stats(callback: CallbackQuery, db_user: User) -> None:
+    if not _admin_only(db_user):
+        await callback.answer("⛔ Admins only.", show_alert=True)
+        return
+    streamer_id = int(callback.data.split(":")[1])
+    async with get_session() as session:
+        svc = AnalyticsService(session)
+        stats = await svc.get_streamer_stats(streamer_id)
+    if stats is None:
+        await callback.answer("Streamer not found.", show_alert=True)
+        return
+    last = stats.last_stream_at.strftime("%d %b %Y") if stats.last_stream_at else "Never"
+    text = (
+        f"📊 *{stats.display_name}* — Stats\n\n"
+        f"Total streams: {stats.total_streams}\n"
+        f"Hours streamed: {stats.total_hours_streamed}h\n"
+        f"Notifications sent: {stats.total_notifications_sent}\n"
+        f"Peak viewers: {stats.peak_viewers or 'N/A'}\n"
+        f"Last stream: {last}\n"
+        f"Platforms: {', '.join(stats.platforms) or 'None'}"
+    )
+    await callback.message.edit_text(text, parse_mode="Markdown",
+                                     reply_markup=back_keyboard("back_to_streamers"))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("streamer_channels:"))
+async def cb_streamer_channels(callback: CallbackQuery, db_user: User) -> None:
+    if not _admin_only(db_user):
+        await callback.answer("⛔ Admins only.", show_alert=True)
+        return
+    streamer_id = int(callback.data.split(":")[1])
+    async with get_session() as session:
+        svc = StreamerService(session)
+        streamer = await svc.get_streamer(streamer_id)
+        assignments = await svc.get_assignments(streamer_id)
+    if streamer is None:
+        await callback.answer("Streamer not found.", show_alert=True)
+        return
+    if not assignments:
+        text = f"📢 *{streamer.display_name}* — no channels assigned.\n\nUse /assign\\_channel to add one."
+    else:
+        lines = []
+        for a in assignments:
+            ch = a.channel
+            viewers = f"min {a.min_viewer_count}👥" if a.min_viewer_count else "no threshold"
+            tmpl = "Custom template" if a.message_template else "Default template"
+            lines.append(f"• *{ch.title}* — {tmpl}, {viewers}")
+        text = f"📢 *{streamer.display_name}* — channels:\n\n" + "\n".join(lines)
+    await callback.message.edit_text(text, parse_mode="Markdown",
+                                     reply_markup=back_keyboard("back_to_streamers"))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "back_to_streamers")
+async def cb_back_to_streamers(callback: CallbackQuery, db_user: User) -> None:
+    async with get_session() as session:
+        svc = StreamerService(session)
+        streamers = await svc.list_streamers()
+    kb = streamers_list_keyboard(streamers, action_prefix="view_streamer")
+    await callback.message.edit_text("📋 *All streamers* — tap to manage:",
+                                     reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
 
@@ -457,6 +527,12 @@ async def test_notif_streamer_selected(callback: CallbackQuery, state: FSMContex
     async with get_session() as session:
         svc = ChannelService(session)
         channels = await svc.list_channels()
+    # FIX m-3: guard against empty channel list — user was stuck with no buttons
+    if not channels:
+        await callback.message.edit_text("No channels registered. Use /add_channel first.")
+        await state.clear()
+        await callback.answer()
+        return
     kb = channels_list_keyboard(channels, "test_notif_channel")
     await callback.message.edit_text(
         "Select a *channel* to send the test to:", reply_markup=kb, parse_mode="Markdown"
@@ -616,6 +692,15 @@ async def apikey_value_input(message: Message, db_user: User, state: FSMContext)
         await message.delete()
     except Exception:
         pass
+
+    # FIX M-4: guard against empty ENCRYPTION_KEY before attempting Fernet
+    if not settings.ENCRYPTION_KEY:
+        await message.answer(
+            "❌ *ENCRYPTION\\_KEY* is not configured in `.env`.\n"
+            "Generate one and restart the bot before storing API credentials.",
+            parse_mode="Markdown",
+        )
+        return
 
     from db.models import ApiCredential
     from cryptography.fernet import Fernet

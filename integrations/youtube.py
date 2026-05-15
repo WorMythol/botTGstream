@@ -125,6 +125,14 @@ class YouTubeIntegration(BasePlatformIntegration):
             "key": self._api_key,
         }
         async with self._session.get(f"{_YT_BASE}/videos", params=params) as resp:
+            # FIX M-8: mirror quota-exceeded check from _search_live
+            if resp.status == 403:
+                data = await resp.json()
+                reason = data.get("error", {}).get("errors", [{}])[0].get("reason", "")
+                if "quotaExceeded" in reason:
+                    logger.error("youtube.quota_exceeded_on_videos_list")
+                    return PlatformCheckResult(is_live=False, error="quotaExceeded", quota_cost=_VIDEOS_QUOTA_COST)
+                raise aiohttp.ClientResponseError(resp.request_info, resp.history, status=403)
             resp.raise_for_status()
             data = await resp.json()
 

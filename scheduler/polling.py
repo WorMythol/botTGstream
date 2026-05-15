@@ -104,7 +104,11 @@ async def poll_youtube() -> None:
 
                 if result.error == "quotaExceeded":
                     logger.error("poll.youtube.quota_exceeded")
-                    # Notify admins about quota exhaustion
+                    # FIX C-3: persist quota consumed BEFORE returning, so it's not lost
+                    from db.repositories.polling_repo import PollingStateRepository
+                    _ps_repo = PollingStateRepository(session)
+                    await _ps_repo.add_youtube_quota(total_quota)
+                    await _ps_repo.record_poll(Platform.YOUTUBE)
                     if _bot_context:
                         await _notify_admins_quota_exceeded(session)
                     return
@@ -159,6 +163,7 @@ async def poll_twitch() -> None:
             ps.twitch_access_token = token
             ps.twitch_token_expires_at = datetime.fromtimestamp(expires_at, tz=timezone.utc)
         ps.last_poll_at = datetime.now(timezone.utc)
+        await session.flush()  # FIX M-6: persist token before stream processing that may raise
 
         await _process_stream_results(session, results)
         logger.info("poll.twitch.done")
@@ -262,8 +267,7 @@ async def _process_account_result(
     elif result.is_live:
         stream_id = result.stream.platform_stream_id if result.stream else None
         await account_repo.update_live_status(account.id, True, stream_id)
-        # Reset streamer error counter on successful poll
-        StreamerRepository(session)
+        # FIX C-2: removed dead StreamerRepository(session) call
         await StreamerRepository(session).reset_errors(account.streamer_id)
     else:
         await account_repo.update_live_status(account.id, False, None)

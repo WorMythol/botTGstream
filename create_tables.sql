@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS streamer_user_assignments (
 -- ── Стримы (сессии вещания) ───────────────────────────────────
 CREATE TABLE IF NOT EXISTS streams (
     id                      SERIAL PRIMARY KEY,
-    streamer_id             INT         NOT NULL REFERENCES streamers(id),
+    streamer_id             INT         NOT NULL REFERENCES streamers(id) ON DELETE CASCADE, -- FIX C-4
     status                  streamstatus NOT NULL DEFAULT 'live',
     started_at              TIMESTAMPTZ NOT NULL,
     ended_at                TIMESTAMPTZ,

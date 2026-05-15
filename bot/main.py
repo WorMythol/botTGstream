@@ -10,7 +10,6 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup
 
 from bot.handlers import admin, common, owner, streamer
 from bot.middlewares.auth import AuthMiddleware

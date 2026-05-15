@@ -103,7 +103,7 @@ def upgrade() -> None:
     op.create_table(
         "streams",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("streamer_id", sa.Integer(), sa.ForeignKey("streamers.id"), nullable=False),
+        sa.Column("streamer_id", sa.Integer(), sa.ForeignKey("streamers.id", ondelete="CASCADE"), nullable=False),  # FIX C-4
         sa.Column("status", sa.Enum("live", "ended", "unknown", name="streamstatus"), nullable=False, server_default="live"),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),

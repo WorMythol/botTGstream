@@ -201,7 +201,7 @@ class Stream(Base):
     __tablename__ = "streams"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    streamer_id: Mapped[int] = mapped_column(Integer, ForeignKey("streamers.id"))
+    streamer_id: Mapped[int] = mapped_column(Integer, ForeignKey("streamers.id", ondelete="CASCADE"))  # FIX C-4
     status: Mapped[StreamStatus] = mapped_column(Enum(StreamStatus), default=StreamStatus.LIVE)
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

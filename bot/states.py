@@ -33,7 +33,7 @@ class UpdateApiKeyStates(StatesGroup):
 
 class ManageUserStates(StatesGroup):
     waiting_user_id = State()
-    waiting_role = State()
+    # waiting_role: reserved for future two-step role selection wizard
 
 
 class TestNotificationStates(StatesGroup):
