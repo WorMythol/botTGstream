@@ -104,7 +104,9 @@ class Streamer(Base):
     user_assignments: Mapped[List["StreamerUserAssignment"]] = relationship(
         back_populates="streamer", cascade="all, delete-orphan"
     )
-    streams: Mapped[List["Stream"]] = relationship(back_populates="streamer")
+    streams: Mapped[List["Stream"]] = relationship(
+        back_populates="streamer", cascade="all, delete-orphan"  # FIX C-3: was missing cascade
+    )
 
 
 class PlatformAccount(Base):
@@ -268,6 +270,10 @@ class Notification(Base):
 
     # Snapshot of rendered message text at send time
     rendered_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # FIX M-1: track whether message was sent as photo (caption) or plain text,
+    # so the correct edit method can be chosen later.
+    is_photo_message: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Telegram reactions (updated periodically if API supports)
     reactions: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

@@ -1,5 +1,5 @@
 """Streamer + PlatformAccount + assignment repositories."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import select
@@ -76,7 +76,7 @@ class StreamerRepository(BaseRepository[Streamer]):
             return False
         streamer.consecutive_errors += 1
         if streamer.consecutive_errors >= max_errors:
-            streamer.auto_disabled_at = datetime.utcnow()
+            streamer.auto_disabled_at = datetime.now(timezone.utc)
             streamer.auto_disabled_reason = f"Auto-disabled after {streamer.consecutive_errors} consecutive errors"
             await self.session.flush()
             return True
@@ -123,7 +123,7 @@ class PlatformAccountRepository(BaseRepository[PlatformAccount]):
         if account:
             account.is_live = is_live
             account.current_stream_platform_id = stream_platform_id
-            account.last_checked_at = datetime.utcnow()
+            account.last_checked_at = datetime.now(timezone.utc)
             account.last_error = None
             account.consecutive_errors = 0
             await self.session.flush()
@@ -133,7 +133,7 @@ class PlatformAccountRepository(BaseRepository[PlatformAccount]):
         if account:
             account.last_error = error
             account.consecutive_errors += 1
-            account.last_checked_at = datetime.utcnow()
+            account.last_checked_at = datetime.now(timezone.utc)
             await self.session.flush()
 
 

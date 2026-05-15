@@ -113,8 +113,18 @@ async def poll_youtube() -> None:
                 if result.is_live and result.stream:
                     results[streamer.id][Platform.YOUTUBE] = result.stream
 
+        # FIX M-2: persist quota usage so /health shows real numbers
+        from db.repositories.polling_repo import PollingStateRepository
+        ps_repo = PollingStateRepository(session)
+        new_total = await ps_repo.add_youtube_quota(total_quota)
+        await ps_repo.record_poll(Platform.YOUTUBE)
+
+        # Warn admins if quota approaching limit
+        if new_total >= settings.YOUTUBE_QUOTA_WARNING_THRESHOLD and _bot_context:
+            await _notify_admins_quota_exceeded(session)
+
         await _process_stream_results(session, results)
-        logger.info("poll.youtube.done", quota_used=total_quota)
+        logger.info("poll.youtube.done", quota_used=total_quota, total_today=new_total)
 
 
 async def poll_twitch() -> None:
@@ -140,21 +150,15 @@ async def poll_twitch() -> None:
                 if result.is_live and result.stream:
                     results[streamer.id][Platform.TWITCH] = result.stream
 
-        # Persist refreshed Twitch token
+        # Persist refreshed Twitch token + record poll time (FIX M-2)
+        from db.repositories.polling_repo import PollingStateRepository
+        ps_repo = PollingStateRepository(session)
+        ps = await ps_repo.get_or_create(Platform.TWITCH)
         token, expires_at = twitch.get_token_state()
         if token:
-            from db.models import PollingState
-            from sqlalchemy import select
-            ps_result = await session.execute(
-                select(PollingState).where(PollingState.platform == Platform.TWITCH)
-            )
-            ps = ps_result.scalar_one_or_none()
-            if ps is None:
-                ps = PollingState(platform=Platform.TWITCH)
-                session.add(ps)
             ps.twitch_access_token = token
             ps.twitch_token_expires_at = datetime.fromtimestamp(expires_at, tz=timezone.utc)
-            ps.last_poll_at = datetime.now(timezone.utc)
+        ps.last_poll_at = datetime.now(timezone.utc)
 
         await _process_stream_results(session, results)
         logger.info("poll.twitch.done")
@@ -177,6 +181,9 @@ async def poll_vk() -> None:
                 await _process_account_result(session, account, result, account_repo)
                 if result.is_live and result.stream:
                     results[streamer.id][Platform.VK] = result.stream
+
+        from db.repositories.polling_repo import PollingStateRepository
+        await PollingStateRepository(session).record_poll(Platform.VK)
 
         await _process_stream_results(session, results)
         logger.info("poll.vk.done")
@@ -235,16 +242,29 @@ async def _process_account_result(
 ) -> None:
     if result.error and result.error not in ("quotaExceeded", "rate_limited"):
         await account_repo.record_error(account.id, result.error)
-        if account.consecutive_errors + 1 >= settings.MAX_CONSECUTIVE_ERRORS:
-            logger.warning(
-                "account.auto_disabling",
-                account_id=account.id,
-                platform=account.platform,
-                errors=account.consecutive_errors + 1,
+        # FIX M-3: actually disable the streamer in DB, not just log a warning
+        errors_after = account.consecutive_errors + 1
+        if errors_after >= settings.MAX_CONSECUTIVE_ERRORS:
+            streamer_repo = StreamerRepository(session)
+            disabled = await streamer_repo.increment_errors(
+                account.streamer_id, settings.MAX_CONSECUTIVE_ERRORS
             )
+            if disabled:
+                logger.warning(
+                    "streamer.auto_disabled",
+                    streamer_id=account.streamer_id,
+                    platform=account.platform,
+                    errors=errors_after,
+                )
+                # Notify admins
+                if _bot_context:
+                    await _notify_admins_streamer_disabled(session, account.streamer_id)
     elif result.is_live:
         stream_id = result.stream.platform_stream_id if result.stream else None
         await account_repo.update_live_status(account.id, True, stream_id)
+        # Reset streamer error counter on successful poll
+        StreamerRepository(session)
+        await StreamerRepository(session).reset_errors(account.streamer_id)
     else:
         await account_repo.update_live_status(account.id, False, None)
 
@@ -276,6 +296,31 @@ async def _process_stream_results(
             await stream_service.process_live_results(streamer_id, live_map)
         except Exception as exc:
             logger.exception("stream_service.error", streamer_id=streamer_id, error=str(exc))
+
+
+async def _notify_admins_streamer_disabled(session, streamer_id: int) -> None:
+    """Notify admins when a streamer is auto-disabled due to repeated errors."""
+    if _bot_context is None:
+        return
+    from db.repositories.user_repo import UserRepository
+    from db.repositories.streamer_repo import StreamerRepository
+    from db.models import UserRole
+    user_repo = UserRepository(session)
+    streamer = await StreamerRepository(session).get(streamer_id)
+    name = streamer.display_name if streamer else f"#{streamer_id}"
+    admins = await user_repo.get_by_role(UserRole.ADMIN)
+    owners = await user_repo.get_by_role(UserRole.OWNER)
+    for user in admins + owners:
+        try:
+            await _bot_context.bot.send_message(
+                user.id,
+                f"⛔ *Streamer auto-disabled*\n\n"
+                f"*{name}* was disabled after {settings.MAX_CONSECUTIVE_ERRORS} consecutive API errors.\n\n"
+                f"Use /list\\_streamers → Resume to re-enable once the issue is resolved.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
 
 
 async def _notify_admins_quota_exceeded(session) -> None:

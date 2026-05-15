@@ -83,23 +83,24 @@ class BotContext:
         message_id: int,
         text: str,
         platform_links: List[PlatformLink],
+        is_photo_message: bool = False,  # FIX M-1: use correct edit method per message type
     ) -> bool:
         from bot.keyboards.inline import stream_links_keyboard
         from aiogram.exceptions import TelegramBadRequest
 
         keyboard = stream_links_keyboard(platform_links) if platform_links else None
         try:
-            await self.bot.edit_message_caption(
-                chat_id=chat_id,
-                message_id=message_id,
-                caption=text,
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return True
-        except TelegramBadRequest:
-            # Message may not have a caption (text message) — try edit_message_text
-            try:
+            if is_photo_message:
+                # Photo messages must be edited via edit_message_caption
+                await self.bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                # Plain text messages use edit_message_text
                 await self.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
@@ -107,12 +108,12 @@ class BotContext:
                     reply_markup=keyboard,
                     parse_mode=ParseMode.MARKDOWN,
                 )
-                return True
-            except TelegramBadRequest as exc:
-                if "message is not modified" in str(exc).lower():
-                    return True  # no-op is OK
-                logger.warning("bot.edit.failed", chat_id=chat_id, message_id=message_id, error=str(exc))
-                return False
+            return True
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return True  # no-op is OK
+            logger.warning("bot.edit.failed", chat_id=chat_id, message_id=message_id, error=str(exc))
+            return False
         except Exception as exc:
             logger.exception("bot.edit.error", chat_id=chat_id, message_id=message_id)
             return False
@@ -200,6 +201,11 @@ async def main() -> None:
         scheduler.shutdown()
         await close_db()
         await bot.session.close()
+        # FIX m-3: close shared aiohttp session used by platform integrations
+        from scheduler.polling import get_http_session
+        http = get_http_session()
+        if not http.closed:
+            await http.close()
         logger.info("bot.shutdown")
 
 

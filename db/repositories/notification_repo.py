@@ -43,3 +43,14 @@ class NotificationRepository(BaseRepository[Notification]):
             .where(Notification.stream_id == stream_id)
         )
         return list(result.scalars().all())
+
+    async def get_with_channel(self, notification_id: int) -> Optional[Notification]:
+        """Load notification with channel eagerly — use instead of get() when channel is needed."""
+        # FIX C-2: BaseRepository.get() uses session.get() with no selectinload,
+        # accessing .channel in async context raises MissingGreenlet.
+        result = await self.session.execute(
+            select(Notification)
+            .options(selectinload(Notification.channel))
+            .where(Notification.id == notification_id)
+        )
+        return result.scalar_one_or_none()

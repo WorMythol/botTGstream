@@ -141,6 +141,7 @@ def upgrade() -> None:
         sa.Column("edited_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("rendered_text", sa.Text(), nullable=True),
+        sa.Column("is_photo_message", sa.Boolean(), nullable=False, server_default="false"),  # FIX M-1
         sa.Column("reactions", postgresql.JSONB(), nullable=True),
     )
     op.create_index("ix_notifications_stream_channel", "notifications", ["stream_id", "channel_id"])

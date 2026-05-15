@@ -1,4 +1,8 @@
-"""Jinja2-based notification message template rendering."""
+"""Jinja2-based notification message template rendering.
+
+Templates are rendered for Telegram Markdown v1. External API content (stream titles,
+usernames) is sanitised via `md_escape` before insertion to avoid parse errors.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,6 +25,19 @@ Watch now:
 
 _jinja_env = Environment(undefined=StrictUndefined, autoescape=False)
 
+# FIX M-5: Telegram Markdown v1 special chars that break parsing when unescaped
+_MD_SPECIAL = str.maketrans({
+    "*": r"\*",
+    "_": r"\_",
+    "`": r"\`",
+    "[": r"\[",
+})
+
+
+def md_escape(text: str) -> str:
+    """Escape Markdown v1 special characters in user-controlled / API-sourced strings."""
+    return text.translate(_MD_SPECIAL) if text else text
+
 
 def _format_viewers(count: int) -> str:
     if count >= 1_000_000:
@@ -31,6 +48,7 @@ def _format_viewers(count: int) -> str:
 
 
 _jinja_env.filters["format_viewers"] = _format_viewers
+_jinja_env.filters["md_escape"] = md_escape
 
 
 @dataclass
@@ -60,9 +78,10 @@ def render_template(
     Falls back to DEFAULT_TEMPLATE if template_str is None or rendering fails.
     """
     src = template_str or DEFAULT_TEMPLATE
+    # FIX M-5: escape API-sourced strings before rendering into Markdown v1
     context = {
-        "streamer_name": streamer_name,
-        "stream_title": stream_title or "",
+        "streamer_name": md_escape(streamer_name),
+        "stream_title": md_escape(stream_title or ""),
         "viewer_count": viewer_count,
         "platform_links": platform_links,
     }

@@ -51,5 +51,5 @@ class AuthMiddleware(BaseMiddleware):
                 return
 
             data["db_user"] = user
-            data["db_session"] = session
+            # Note: db_session intentionally NOT injected — handlers open their own sessions
             return await handler(event, data)

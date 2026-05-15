@@ -1,8 +1,8 @@
 """Stream and PlatformStream repositories."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +15,7 @@ class StreamRepository(BaseRepository[Stream]):
         super().__init__(Stream, session)
 
     async def get_active_for_streamer(self, streamer_id: int) -> Optional[Stream]:
-        """Return the current live/cooldown stream session for a streamer."""
+        """Return the current LIVE stream session for a streamer (at most one)."""
         result = await self.session.execute(
             select(Stream)
             .options(
@@ -26,8 +26,9 @@ class StreamRepository(BaseRepository[Stream]):
                 Stream.streamer_id == streamer_id,
                 Stream.status == StreamStatus.LIVE,
             )
+            .limit(1)  # guard against duplicate LIVE rows from data corruption
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def get_with_details(self, stream_id: int) -> Optional[Stream]:
         result = await self.session.execute(
@@ -57,13 +58,13 @@ class StreamRepository(BaseRepository[Stream]):
         stream = await self.get(stream_id)
         if stream:
             stream.status = StreamStatus.ENDED
-            stream.ended_at = datetime.utcnow()
+            stream.ended_at = datetime.now(timezone.utc)   # FIX C-1: was utcnow()
             stream.cooldown_until = cooldown_until
             await self.session.flush()
 
     async def get_in_cooldown(self, streamer_id: int) -> Optional[Stream]:
-        """Return stream in cooldown window (recently ended)."""
-        now = datetime.utcnow()
+        """Return stream in cooldown window (recently ended, may restart)."""
+        now = datetime.now(timezone.utc)                   # FIX C-1: was utcnow()
         result = await self.session.execute(
             select(Stream)
             .options(selectinload(Stream.platform_streams))
@@ -72,8 +73,9 @@ class StreamRepository(BaseRepository[Stream]):
                 Stream.status == StreamStatus.ENDED,
                 Stream.cooldown_until > now,
             )
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def get_recent_streams(self, limit: int = 100) -> List[Stream]:
         result = await self.session.execute(
@@ -112,5 +114,5 @@ class PlatformStreamRepository(BaseRepository[PlatformStream]):
     async def end_platform_stream(self, platform_stream_id: int) -> None:
         ps = await self.get(platform_stream_id)
         if ps:
-            ps.ended_at = datetime.utcnow()
+            ps.ended_at = datetime.now(timezone.utc)       # FIX C-1: was utcnow()
             await self.session.flush()

@@ -50,6 +50,21 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must use postgresql+asyncpg:// scheme")
         return v
 
+    @field_validator("ENCRYPTION_KEY")
+    @classmethod
+    def validate_encryption_key(cls, v: str) -> str:
+        # FIX m-4: validate Fernet key at startup, not at first use
+        if v:
+            try:
+                from cryptography.fernet import Fernet
+                Fernet(v.encode())
+            except Exception:
+                raise ValueError(
+                    "ENCRYPTION_KEY must be a valid 32-byte URL-safe base64 Fernet key. "
+                    "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                )
+        return v
+
     model_config = {"env_file": ".env", "case_sensitive": True}
 
 

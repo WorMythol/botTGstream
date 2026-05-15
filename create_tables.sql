@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     edited_at           TIMESTAMPTZ,
     error_message       TEXT,
     rendered_text       TEXT,                       -- снапшот отправленного текста
+    is_photo_message    BOOLEAN     NOT NULL DEFAULT FALSE, -- для корректного редактирования
     reactions           JSONB                       -- реакции Telegram
 );
 

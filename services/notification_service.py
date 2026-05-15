@@ -57,15 +57,19 @@ class NotificationService:
         assignments = await self._assign_repo.get_for_streamer(stream.streamer_id)
         platform_links = self._build_links(stream)
 
+        any_sent = False
         for assignment in assignments:
-            await self._deliver_to_channel(
+            sent = await self._deliver_to_channel(
                 stream=stream,
                 assignment=assignment,
                 streamer_name=streamer.display_name,
                 platform_links=platform_links,
             )
+            any_sent = any_sent or sent
 
-        stream.notification_sent_at = datetime.now(timezone.utc)
+        # FIX M-4: only mark notification_sent_at if at least one channel succeeded
+        if any_sent:
+            stream.notification_sent_at = datetime.now(timezone.utc)
         await self._session.flush()
 
     async def _deliver_to_channel(
@@ -74,10 +78,11 @@ class NotificationService:
         assignment: Any,
         streamer_name: str,
         platform_links: List[PlatformLink],
-    ) -> None:
+    ) -> bool:
+        """Deliver notification to one channel. Returns True if message was sent."""
         channel = assignment.channel
         if not channel or not channel.is_active:
-            return
+            return False
 
         # Viewer threshold check (additional feature)
         total_viewers = sum(
@@ -93,7 +98,7 @@ class NotificationService:
                 viewers=total_viewers,
                 threshold=assignment.min_viewer_count,
             )
-            return
+            return False
 
         # Render message
         active_ps = [ps for ps in stream.platform_streams if ps.ended_at is None]
@@ -132,17 +137,21 @@ class NotificationService:
             notif.telegram_message_id = message_id
             notif.status = NotificationStatus.SENT
             notif.sent_at = datetime.now(timezone.utc)
+            notif.is_photo_message = thumbnail is not None  # FIX M-1: track message type
             logger.info(
                 "notification.sent",
                 stream_id=stream.id,
                 channel_id=channel.id,
                 message_id=message_id,
             )
+            await self._session.flush()
+            return True  # FIX M-4
         else:
             notif.status = NotificationStatus.FAILED
             notif.error_message = "send returned None"
             logger.error("notification.send_failed", stream_id=stream.id, channel_id=channel.id)
-        await self._session.flush()
+            await self._session.flush()
+            return False  # FIX M-4
 
     # ── Update (edit) ─────────────────────────────────────────────────────────
 
@@ -176,6 +185,7 @@ class NotificationService:
                 message_id=notif.telegram_message_id,
                 text=rendered,
                 platform_links=platform_links,
+                is_photo_message=notif.is_photo_message,  # FIX M-1
             )
             if success:
                 notif.status = NotificationStatus.EDITED
@@ -203,7 +213,9 @@ class NotificationService:
         return deleted
 
     async def delete_notification(self, notification_id: int) -> bool:
-        notif = await self._notif_repo.get(notification_id)
+        # FIX C-2: use get_with_channel() to eager-load .channel,
+        # avoiding MissingGreenlet error in async SQLAlchemy context.
+        notif = await self._notif_repo.get_with_channel(notification_id)
         if notif is None or notif.telegram_message_id is None:
             return False
         success = await self._delete(
