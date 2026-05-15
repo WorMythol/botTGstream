@@ -37,8 +37,17 @@ STREAMER_COMMANDS = """
 `/my_streamers` — View your streamers
 `/edit_template` — Edit a notification template
 `/my_stats` — Your streamer statistics
-`/global_stats` — Global leaderboard
 `/stream_history` — Recent stream history
+
+🎮 *Gamification:*
+`/top` — Top-10 leaderboard (streams/hours/viewers/streak)
+`/leaderboard [streams|hours|viewers|streak]` — Detailed leaderboard
+`/achievements [id]` — Unlocked achievements & progress
+"""
+
+ADMIN_EXTRA_COMMANDS = """
+⚙️ *Operational:*
+`/maintenance [on|off|30m|2h]` — Toggle maintenance mode
 """
 
 
@@ -59,6 +68,7 @@ async def cmd_help(message: Message, db_user: User) -> None:
     text += STREAMER_COMMANDS
     if db_user.role in (UserRole.ADMIN, UserRole.OWNER):
         text += ADMIN_COMMANDS
+        text += ADMIN_EXTRA_COMMANDS
     if db_user.role == UserRole.OWNER:
         text += OWNER_COMMANDS
     await message.answer(text, parse_mode="Markdown")

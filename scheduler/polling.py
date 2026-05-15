@@ -12,7 +12,11 @@ Feature 9: Per-streamer poll priority.
 
 Feature 2: Retry job runs every 60 seconds, retries FAILED notifications.
 
-Each platform runs on its own scheduler job at the configured interval.
+Sprint 2 additions:
+  - Maintenance mode check before every poll cycle (skips if active)
+  - Daily streak-reset job at 00:05 UTC
+  - Daily pg_dump backup job at 03:00 UTC (if BACKUP_DIR configured)
+  - Hot-reload: poll intervals reschedule themselves if settings changed
 """
 from __future__ import annotations
 
@@ -103,6 +107,25 @@ def create_scheduler() -> AsyncIOScheduler:
         max_instances=1, coalesce=True,
     )
 
+    # Sprint 2: Daily streak reset at 00:05 UTC
+    scheduler.add_job(
+        reset_streaks_daily, "cron", hour=0, minute=5, id="reset_streaks",
+        max_instances=1, coalesce=True,
+    )
+
+    # Sprint 2: Daily pg_dump backup at 03:00 UTC (only if BACKUP_DIR configured)
+    if settings.BACKUP_DIR:
+        scheduler.add_job(
+            run_backup, "cron", hour=3, minute=0, id="run_backup",
+            max_instances=1, coalesce=True,
+        )
+
+    # Sprint 2: Hot-reload poll interval check every 5 minutes
+    scheduler.add_job(
+        reload_poll_intervals, "interval", minutes=5, id="reload_poll_intervals",
+        max_instances=1, coalesce=True,
+    )
+
     return scheduler
 
 
@@ -146,6 +169,9 @@ async def poll_high_priority() -> None:
 async def poll_youtube() -> None:
     logger.debug("poll.youtube.start")
     async with get_session() as session:
+        if await _is_maintenance_mode(session):
+            logger.debug("poll.youtube.skipped_maintenance")
+            return
         streamer_repo = StreamerRepository(session)
         account_repo = PlatformAccountRepository(session)
         streamers = await streamer_repo.get_active_streamers()
@@ -209,6 +235,10 @@ async def poll_twitch() -> None:
         return
 
     async with get_session() as session:
+        if await _is_maintenance_mode(session):
+            logger.debug("poll.twitch.skipped_maintenance")
+            return
+
         streamer_repo = StreamerRepository(session)
         account_repo = PlatformAccountRepository(session)
         streamers = await streamer_repo.get_active_streamers()
@@ -247,6 +277,10 @@ async def poll_twitch() -> None:
 async def poll_vk() -> None:
     logger.debug("poll.vk.start")
     async with get_session() as session:
+        if await _is_maintenance_mode(session):
+            logger.debug("poll.vk.skipped_maintenance")
+            return
+
         streamer_repo = StreamerRepository(session)
         account_repo = PlatformAccountRepository(session)
         streamers = await streamer_repo.get_active_streamers()
@@ -291,6 +325,166 @@ async def retry_notifications() -> None:
         count = await notif_service.retry_failed_notifications()
         if count > 0:
             logger.info("retry_notifications.done", retried=count)
+
+
+# ── Sprint 2: Maintenance mode helper ─────────────────────────────────────────
+
+async def _is_maintenance_mode(session) -> bool:
+    """Return True if maintenance mode is currently active."""
+    from sqlalchemy import select as _select
+    from db.models import SystemSetting
+    result = await session.execute(
+        _select(SystemSetting).where(SystemSetting.key == "maintenance_mode")
+    )
+    setting = result.scalar_one_or_none()
+    if setting is None or setting.value == "0":
+        return False
+    # Value can be "1" (indefinite) or ISO timestamp for timed maintenance
+    if setting.value == "1":
+        return True
+    try:
+        until = datetime.fromisoformat(setting.value)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < until
+    except ValueError:
+        return False
+
+
+# ── Sprint 2: Daily streak reset ──────────────────────────────────────────────
+
+async def reset_streaks_daily() -> None:
+    """Reset broken streaks for all streamers who missed yesterday."""
+    async with get_session() as session:
+        from services.gamification_service import GamificationService
+        svc = GamificationService(session)
+        count = await svc.reset_broken_streaks()
+        if count > 0:
+            logger.info("scheduler.streaks_reset", count=count)
+
+
+# ── Sprint 2: pg_dump backup ──────────────────────────────────────────────────
+
+async def run_backup() -> None:
+    """Create a pg_dump backup of the database and prune old backups."""
+    if not settings.BACKUP_DIR:
+        return
+
+    import os
+    import subprocess
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    backup_dir = Path(settings.BACKUP_DIR)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse DATABASE_URL for pg_dump args
+    parsed = urlparse(settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_file = backup_dir / f"backup_{timestamp}.sql.gz"
+
+    env = os.environ.copy()
+    if parsed.password:
+        env["PGPASSWORD"] = parsed.password
+
+    cmd = [
+        "pg_dump",
+        "-h", parsed.hostname or "localhost",
+        "-p", str(parsed.port or 5432),
+        "-U", parsed.username or "postgres",
+        "-d", (parsed.path or "/postgres").lstrip("/"),
+        "-F", "p",   # plain SQL
+        "--no-owner",
+        "--no-acl",
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.error("backup.pg_dump_failed", stderr=stderr.decode()[:500])
+            return
+
+        # Gzip the output
+        import gzip
+        with gzip.open(backup_file, "wb") as f:
+            f.write(stdout)
+
+        size_kb = backup_file.stat().st_size // 1024
+        logger.info("backup.created", file=str(backup_file), size_kb=size_kb)
+
+        # Prune backups older than BACKUP_KEEP_DAYS
+        cutoff = datetime.now(timezone.utc).timestamp() - settings.BACKUP_KEEP_DAYS * 86400
+        pruned = 0
+        for old in backup_dir.glob("backup_*.sql.gz"):
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+                pruned += 1
+        if pruned:
+            logger.info("backup.pruned", count=pruned)
+
+    except FileNotFoundError:
+        logger.error("backup.pg_dump_not_found", hint="Install postgresql-client for pg_dump")
+    except Exception as exc:
+        logger.exception("backup.error", error=str(exc))
+
+
+# ── Sprint 2: Hot-reload poll intervals ───────────────────────────────────────
+
+# Track last-known interval values for hot-reload detection
+_last_intervals: Dict[str, int] = {}
+
+
+async def reload_poll_intervals() -> None:
+    """Reschedule poll jobs if POLL_INTERVAL_* settings changed at runtime.
+
+    This allows operators to update intervals via SystemSettings or env reload
+    without restarting the bot.
+    """
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    # Access the running scheduler via APScheduler's global registry
+    from apscheduler.schedulers.base import STATE_RUNNING
+
+    new_intervals = {
+        "poll_youtube": settings.POLL_INTERVAL_YOUTUBE,
+        "poll_twitch": settings.POLL_INTERVAL_TWITCH,
+        "poll_vk": settings.POLL_INTERVAL_VK,
+    }
+    global _last_intervals
+    if not _last_intervals:
+        _last_intervals = dict(new_intervals)
+        return  # First run — just record
+
+    changed = {k: v for k, v in new_intervals.items() if _last_intervals.get(k) != v}
+    if not changed:
+        return
+
+    # Reschedule changed jobs — requires access to running scheduler
+    # We access it via APScheduler's running instance attached to the event loop
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler as _Sched
+        import asyncio as _asyncio
+        loop = _asyncio.get_event_loop()
+        # Find the running scheduler — APScheduler doesn't have a global registry,
+        # so we check all schedulers stored on the loop
+        scheduler: Optional[AsyncIOScheduler] = getattr(loop, "_apscheduler_instance", None)
+        if scheduler is None or scheduler.state != STATE_RUNNING:
+            return
+
+        for job_id, seconds in changed.items():
+            job = scheduler.get_job(job_id)
+            if job:
+                job.reschedule("interval", seconds=seconds)
+                logger.info("scheduler.interval_reloaded", job_id=job_id, seconds=seconds)
+
+        _last_intervals.update(changed)
+    except Exception as exc:
+        logger.warning("scheduler.reload_failed", error=str(exc))
 
 
 # ── Manual trigger ────────────────────────────────────────────────────────────
@@ -399,6 +593,9 @@ async def _process_stream_results(
     if _bot_context is None:
         return
 
+    from services.gamification_service import GamificationService
+    from services.discord_service import DiscordService
+
     notif_service = NotificationService(
         session=session,
         send_fn=_bot_context.send_notification,
@@ -406,7 +603,14 @@ async def _process_stream_results(
         delete_fn=_bot_context.delete_notification,
         vk_send_fn=getattr(_bot_context, "send_vk_notification", None),
     )
-    stream_service = StreamService(session=session, notification_service=notif_service)
+    gamification_service = GamificationService(session)
+    discord_service = DiscordService(session)
+    stream_service = StreamService(
+        session=session,
+        notification_service=notif_service,
+        gamification_service=gamification_service,
+        discord_service=discord_service,
+    )
 
     # Also include streamers with NO live results (need to close active streams)
     if streamer_ids is not None:

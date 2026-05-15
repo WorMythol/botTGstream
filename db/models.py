@@ -50,6 +50,23 @@ class NotificationPlatform(str, enum.Enum):
     VK = "vk"
 
 
+class AchievementType(str, enum.Enum):
+    FIRST_STREAM = "first_stream"
+    STREAMS_10 = "streams_10"
+    STREAMS_50 = "streams_50"
+    STREAMS_100 = "streams_100"
+    HOURS_10 = "hours_10"
+    HOURS_100 = "hours_100"
+    HOURS_500 = "hours_500"
+    STREAK_7 = "streak_7"
+    STREAK_30 = "streak_30"
+    VIEWERS_1K = "viewers_1k"
+    VIEWERS_10K = "viewers_10k"
+    MARATHON = "marathon"
+    NIGHT_OWL = "night_owl"
+    EARLY_BIRD = "early_bird"
+
+
 # ─── Users ────────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -85,6 +102,11 @@ class Streamer(Base):
 
     # Feature 9: polling priority (1=low/10min, 2=normal/5min, 3=high/1min)
     poll_priority: Mapped[int] = mapped_column(Integer, default=2)
+
+    # Gamification: streaks
+    current_streak: Mapped[int] = mapped_column(Integer, default=0)
+    max_streak: Mapped[int] = mapped_column(Integer, default=0)
+    last_stream_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Error tracking for auto-disable
     consecutive_errors: Mapped[int] = mapped_column(Integer, default=0)
@@ -154,6 +176,9 @@ class TelegramChannel(Base):
 
     # Feature 12: VK peer_id for cross-posting to VK (None = no VK delivery)
     vk_peer_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+    # Discord webhook URL for this channel (None = no Discord delivery)
+    discord_webhook_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     assignments: Mapped[List["StreamerChannelAssignment"]] = relationship(back_populates="channel")
 
@@ -332,6 +357,39 @@ class SystemSetting(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     updated_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+
+
+# ─── Gamification ─────────────────────────────────────────────────────────────
+
+class Achievement(Base):
+    """Unlocked achievement for a streamer."""
+    __tablename__ = "achievements"
+    __table_args__ = (
+        UniqueConstraint("streamer_id", "achievement_type", name="uq_streamer_achievement"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    streamer_id: Mapped[int] = mapped_column(Integer, ForeignKey("streamers.id", ondelete="CASCADE"))
+    achievement_type: Mapped[AchievementType] = mapped_column(Enum(AchievementType))
+    earned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    streamer: Mapped["Streamer"] = relationship()
+
+
+# ─── Discord Webhooks ─────────────────────────────────────────────────────────
+
+class DiscordWebhook(Base):
+    """Named global Discord webhook — receives all stream events."""
+    __tablename__ = "discord_webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255))
+    webhook_url: Mapped[str] = mapped_column(String(500))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_end_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
 
 
 # ─── Polling State ────────────────────────────────────────────────────────────

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>StreamBot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --card: #0f3460;
+    --accent: #e94560;
+    --accent2: #57f287;
+    --text: #eaeaea;
+    --muted: #8888aa;
+    --radius: 12px;
+    --tab-h: 56px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  /* Apply Telegram theme colors when available */
+  body.tg-theme {
+    --bg: var(--tg-theme-bg-color, #1a1a2e);
+    --surface: var(--tg-theme-secondary-bg-color, #16213e);
+    --text: var(--tg-theme-text-color, #eaeaea);
+    --accent: var(--tg-theme-button-color, #e94560);
+  }
+
+  /* ── Header ── */
+  .header {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--surface);
+    padding: 12px 16px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .header h1 { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+  .header h1 span { color: var(--accent); }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex; gap: 4px;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    flex-shrink: 0;
+    padding: 8px 16px;
+    border-radius: 20px 20px 0 0;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    color: var(--muted);
+    border: none; background: transparent;
+    transition: color .15s, background .15s;
+  }
+  .tab.active { color: var(--accent); background: rgba(233,69,96,.12); }
+  .tab:hover:not(.active) { color: var(--text); }
+
+  /* ── Sections ── */
+  .section { display: none; padding: 16px; }
+  .section.active { display: block; }
+
+  /* ── Live badge ── */
+  .live-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: var(--accent); color: #fff;
+    font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 20px;
+  }
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #fff; animation: pulse 1.2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* ── Stream card ── */
+  .stream-card {
+    background: var(--card);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .stream-card .thumb {
+    width: 100%; height: 160px;
+    object-fit: cover; display: block;
+  }
+  .stream-card .thumb-placeholder {
+    width: 100%; height: 120px;
+    background: linear-gradient(135deg, var(--surface), var(--card));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 40px;
+  }
+  .stream-card .body { padding: 12px; }
+  .stream-card .streamer-name {
+    font-size: 16px; font-weight: 700; margin-bottom: 4px;
+  }
+  .stream-card .viewers {
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .stream-card .platforms { display: flex; gap: 8px; flex-wrap: wrap; }
+  .platform-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 6px 12px; border-radius: 8px;
+    font-size: 12px; font-weight: 600; text-decoration: none;
+    color: #fff; transition: opacity .15s;
+  }
+  .platform-btn:hover { opacity: .85; }
+  .platform-btn.youtube { background: #ff0000; }
+  .platform-btn.twitch  { background: #9147ff; }
+  .platform-btn.vk      { background: #0077ff; }
+  .platform-btn.other   { background: #444; }
+
+  /* ── Empty state ── */
+  .empty {
+    text-align: center; padding: 60px 20px;
+    color: var(--muted); font-size: 14px;
+  }
+  .empty .icon { font-size: 48px; margin-bottom: 12px; }
+
+  /* ── Leaderboard ── */
+  .lb-tabs {
+    display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .lb-tab {
+    padding: 5px 12px; border-radius: 16px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    background: var(--card); color: var(--muted);
+    border: none; transition: all .15s;
+  }
+  .lb-tab.active { background: var(--accent); color: #fff; }
+
+  .lb-row {
+    display: flex; align-items: center;
+    background: var(--card); border-radius: var(--radius);
+    padding: 12px; margin-bottom: 8px; gap: 12px;
+  }
+  .lb-rank {
+    font-size: 20px; min-width: 32px; text-align: center;
+  }
+  .lb-name { flex: 1; font-weight: 600; font-size: 14px; }
+  .lb-value { font-size: 13px; color: var(--muted); }
+
+  /* ── Achievements ── */
+  .ach-card {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: var(--card); border-radius: var(--radius);
+    padding: 12px; margin-bottom: 8px;
+  }
+  .ach-card.locked { opacity: .45; filter: grayscale(.8); }
+  .ach-emoji { font-size: 28px; min-width: 36px; text-align: center; line-height: 1; }
+  .ach-body { flex: 1; }
+  .ach-name { font-weight: 700; font-size: 14px; }
+  .ach-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .ach-date { font-size: 11px; color: var(--accent2); margin-top: 4px; }
+
+  /* ── Refresh & spinner ── */
+  .refresh-bar {
+    display: flex; justify-content: flex-end; margin-bottom: 12px;
+  }
+  .refresh-btn {
+    background: none; border: 1px solid rgba(255,255,255,.15);
+    border-radius: 8px; color: var(--muted); font-size: 12px;
+    padding: 5px 10px; cursor: pointer; transition: color .15s;
+  }
+  .refresh-btn:hover { color: var(--text); }
+
+  .spinner {
+    display: none;
+    width: 24px; height: 24px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.1);
+    border-top-color: var(--accent);
+    animation: spin .7s linear infinite;
+    margin: 40px auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Streak info ── */
+  .streak-row {
+    display: flex; gap: 10px; margin-bottom: 16px;
+  }
+  .streak-chip {
+    background: var(--card); border-radius: 8px;
+    padding: 8px 14px; font-size: 13px; font-weight: 600;
+  }
+  .streak-chip span { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🎮 Stream<span>Bot</span></h1>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('live')">🔴 Live Now</button>
+    <button class="tab" onclick="showTab('leaderboard')">🏆 Leaderboard</button>
+    <button class="tab" onclick="showTab('achievements')">🏅 Achievements</button>
+  </div>
+</div>
+
+<!-- ── LIVE NOW ── -->
+<div id="tab-live" class="section active">
+  <div class="refresh-bar">
+    <button class="refresh-btn" onclick="loadLive()">↻ Refresh</button>
+  </div>
+  <div class="spinner" id="spinner-live"></div>
+  <div id="live-list"></div>
+</div>
+
+<!-- ── LEADERBOARD ── -->
+<div id="tab-leaderboard" class="section">
+  <div class="lb-tabs">
+    <button class="lb-tab active" onclick="showLb('streams')">🎬 Streams</button>
+    <button class="lb-tab" onclick="showLb('hours')">⏱ Hours</button>
+    <button class="lb-tab" onclick="showLb('viewers')">👥 Viewers</button>
+    <button class="lb-tab" onclick="showLb('streak')">🔥 Streak</button>
+  </div>
+  <div class="spinner" id="spinner-lb"></div>
+  <div id="lb-content"></div>
+</div>
+
+<!-- ── ACHIEVEMENTS ── -->
+<div id="tab-achievements" class="section">
+  <div id="ach-streak-row"></div>
+  <div class="spinner" id="spinner-ach"></div>
+  <div id="ach-list"></div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+// API base URL — replace with your actual API domain, or leave empty to use
+// relative URLs when the Mini App HTML is served from the same origin as the API.
+const API_BASE = window.MINIAPP_API_BASE || '';
+
+// ── Telegram WebApp init ──────────────────────────────────────────────────────
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready();
+  tg.expand();
+  document.body.classList.add('tg-theme');
+  // Apply Telegram colour variables
+  if (tg.themeParams) {
+    const r = document.documentElement.style;
+    if (tg.themeParams.bg_color)           r.setProperty('--bg', tg.themeParams.bg_color);
+    if (tg.themeParams.secondary_bg_color) r.setProperty('--surface', tg.themeParams.secondary_bg_color);
+    if (tg.themeParams.text_color)         r.setProperty('--text', tg.themeParams.text_color);
+    if (tg.themeParams.button_color)       r.setProperty('--accent', tg.themeParams.button_color);
+  }
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let lbData = null;
+let currentLbMode = 'streams';
+let streamerId = null;   // detected from Telegram init data
+
+// Try to extract streamer_id from start_param or initData
+if (tg?.initDataUnsafe?.start_param) {
+  const m = String(tg.initDataUnsafe.start_param).match(/^(\d+)$/);
+  if (m) streamerId = parseInt(m[1]);
+}
+
+// ── Tab navigation ────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((el, i) => {
+    el.classList.toggle('active', ['live','leaderboard','achievements'][i] === name);
+  });
+  document.querySelectorAll('.section').forEach(el => {
+    el.classList.toggle('active', el.id === 'tab-' + name);
+  });
+
+  if (name === 'live' && !document.getElementById('live-list').children.length) loadLive();
+  if (name === 'leaderboard' && !lbData) loadLeaderboard();
+  if (name === 'achievements' && !document.getElementById('ach-list').children.length) loadAchievements();
+}
+
+// ── Fetch helpers ─────────────────────────────────────────────────────────────
+async function apiFetch(path) {
+  const res = await fetch(API_BASE + '/miniapp' + path);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function spinner(id, show) {
+  document.getElementById(id).style.display = show ? 'block' : 'none';
+}
+
+// ── Live Now ──────────────────────────────────────────────────────────────────
+async function loadLive() {
+  spinner('spinner-live', true);
+  const el = document.getElementById('live-list');
+  el.innerHTML = '';
+  try {
+    const streams = await apiFetch('/live');
+    spinner('spinner-live', false);
+    if (!streams.length) {
+      el.innerHTML = `<div class="empty"><div class="icon">😴</div>No streamers are live right now.<br>Check back later!</div>`;
+      return;
+    }
+    el.innerHTML = streams.map(s => streamCard(s)).join('');
+  } catch(e) {
+    spinner('spinner-live', false);
+    el.innerHTML = `<div class="empty"><div class="icon">⚠️</div>Could not load live streams.<br><small>${e.message}</small></div>`;
+  }
+}
+
+function streamCard(s) {
+  const viewersText = s.total_viewers > 0 ? `👥 ${fmt(s.total_viewers)} viewers` : '';
+  const thumb = s.platforms[0]?.thumbnail_url
+    ? `<img class="thumb" src="${esc(s.platforms[0].thumbnail_url)}" alt="thumbnail" loading="lazy">`
+    : `<div class="thumb-placeholder">🎥</div>`;
+  const links = s.platforms.map(p => {
+    const cls = p.platform.toLowerCase();
+    const icon = cls === 'youtube' ? '▶️' : cls === 'twitch' ? '🟣' : cls === 'vk' ? '🔵' : '🔗';
+    return `<a class="platform-btn ${cls in {'youtube':1,'twitch':1,'vk':1} ? cls : 'other'}" href="${esc(p.url)}" target="_blank">${icon} ${esc(p.platform)}</a>`;
+  }).join('');
+  const title = s.platforms[0]?.title || '';
+
+  return `<div class="stream-card">
+    ${thumb}
+    <div class="body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div class="streamer-name">${esc(s.streamer_name)}</div>
+        <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+      </div>
+      ${title ? `<div style="font-size:13px;margin-bottom:6px;color:var(--muted)">${esc(title)}</div>` : ''}
+      ${viewersText ? `<div class="viewers">${viewersText}</div>` : ''}
+      <div class="platforms">${links}</div>
+    </div>
+  </div>`;
+}
+
+// ── Leaderboard ───────────────────────────────────────────────────────────────
+async function loadLeaderboard() {
+  spinner('spinner-lb', true);
+  document.getElementById('lb-content').innerHTML = '';
+  try {
+    lbData = await apiFetch('/leaderboard');
+    spinner('spinner-lb', false);
+    renderLb(currentLbMode);
+  } catch(e) {
+    spinner('spinner-lb', false);
+    document.getElementById('lb-content').innerHTML =
+      `<div class="empty"><div class="icon">⚠️</div>Could not load leaderboard.<br><small>${e.message}</small></div>`;
+  }
+}
+
+function showLb(mode) {
+  currentLbMode = mode;
+  document.querySelectorAll('.lb-tab').forEach((el, i) => {
+    el.classList.toggle('active', ['streams','hours','viewers','streak'][i] === mode);
+  });
+  if (lbData) renderLb(mode);
+  else loadLeaderboard();
+}
+
+const MEDALS = ['🥇','🥈','🥉'];
+function renderLb(mode) {
+  const entries = lbData?.[mode] || [];
+  const el = document.getElementById('lb-content');
+  if (!entries.length) {
+    el.innerHTML = `<div class="empty"><div class="icon">🏆</div>No data yet!</div>`;
+    return;
+  }
+  el.innerHTML = entries.map(e => `
+    <div class="lb-row">
+      <div class="lb-rank">${e.rank <= 3 ? MEDALS[e.rank-1] : `#${e.rank}`}</div>
+      <div class="lb-name">${esc(e.display_name)}</div>
+      <div class="lb-value">${esc(e.extra)}</div>
+    </div>`).join('');
+}
+
+// ── Achievements ──────────────────────────────────────────────────────────────
+async function loadAchievements() {
+  if (!streamerId) {
+    document.getElementById('ach-list').innerHTML =
+      `<div class="empty"><div class="icon">🔐</div>Open this app from your streamer profile to see achievements.</div>`;
+    return;
+  }
+  spinner('spinner-ach', true);
+  document.getElementById('ach-list').innerHTML = '';
+  document.getElementById('ach-streak-row').innerHTML = '';
+  try {
+    const data = await apiFetch(`/achievements/${streamerId}`);
+    spinner('spinner-ach', false);
+
+    const earned = data.filter(a => !a.locked);
+    const locked = data.filter(a => a.locked);
+
+    const el = document.getElementById('ach-list');
+    let html = '';
+    if (earned.length) {
+      html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px;font-weight:600">UNLOCKED (${earned.length})</div>`;
+      html += earned.map(achCard).join('');
+    }
+    if (locked.length) {
+      html += `<div style="font-size:12px;color:var(--muted);margin:16px 0 8px;font-weight:600">LOCKED (${locked.length})</div>`;
+      html += locked.map(achCard).join('');
+    }
+    if (!earned.length && !locked.length) {
+      html = `<div class="empty"><div class="icon">🏅</div>No achievements data.</div>`;
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    spinner('spinner-ach', false);
+    document.getElementById('ach-list').innerHTML =
+      `<div class="empty"><div class="icon">⚠️</div>Could not load achievements.<br><small>${e.message}</small></div>`;
+  }
+}
+
+function achCard(a) {
+  const date = a.locked ? '' : `<div class="ach-date">🗓 ${fmtDate(a.earned_at)}</div>`;
+  return `<div class="ach-card ${a.locked ? 'locked' : ''}">
+    <div class="ach-emoji">${a.emoji}</div>
+    <div class="ach-body">
+      <div class="ach-name">${esc(a.name)}</div>
+      <div class="ach-desc">${esc(a.desc)}</div>
+      ${date}
+    </div>
+  </div>`;
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmt(n) {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n/1_000).toFixed(1) + 'K';
+  return String(n);
+}
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('en-GB', {day:'2-digit',month:'short',year:'numeric'});
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadLive();
+</script>
+</body>
+</html>

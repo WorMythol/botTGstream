@@ -17,8 +17,9 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from bot.handlers import admin, common, owner, streamer
+from bot.handlers import admin, common, gamification, owner, streamer
 from bot.middlewares.auth import AuthMiddleware
+from bot.middlewares.maintenance import MaintenanceMiddleware
 from config import settings
 from db.database import close_db, init_db
 from scheduler.polling import create_scheduler, set_bot_context
@@ -234,14 +235,16 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Register middleware
+    # Register middleware (order matters — auth first, then maintenance gate)
     dp.update.middleware(AuthMiddleware())
+    dp.update.middleware(MaintenanceMiddleware())
 
     # Register routers
     dp.include_router(common.router)
     dp.include_router(owner.router)
     dp.include_router(admin.router)
     dp.include_router(streamer.router)
+    dp.include_router(gamification.router)
 
     # Create bot context and inject into scheduler
     _bot_context = BotContext(bot)

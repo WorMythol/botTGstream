@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS streamers (
     max_consecutive_errors  INT             NOT NULL DEFAULT 5,
     auto_disabled_at        TIMESTAMPTZ,
     auto_disabled_reason    TEXT,
+    current_streak          INT             NOT NULL DEFAULT 0,    -- Sprint 2: gamification
+    max_streak              INT             NOT NULL DEFAULT 0,    -- Sprint 2: gamification
+    last_stream_date        TIMESTAMPTZ,                           -- Sprint 2: gamification
     created_at              TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     created_by              BIGINT          REFERENCES users(id)
@@ -63,8 +66,9 @@ CREATE TABLE IF NOT EXISTS telegram_channels (
     title       VARCHAR(255)    NOT NULL,
     is_active   BOOLEAN         NOT NULL DEFAULT TRUE,
     added_by    BIGINT          REFERENCES users(id),
-    added_at    TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    vk_peer_id  BIGINT                                  -- Feature 12: VK peer ID for cross-posting
+    added_at                TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    vk_peer_id              BIGINT,                                -- Feature 12: VK peer ID for cross-posting
+    discord_webhook_url     VARCHAR(500)                           -- Sprint 2: per-channel Discord webhook
 );
 
 -- ── Привязка стример → канал ──────────────────────────────────
@@ -173,6 +177,37 @@ CREATE TABLE IF NOT EXISTS polling_state (
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── Achievements ──────────────────────────────────────────────
+CREATE TYPE achievementtype AS ENUM (
+    'first_stream','streams_10','streams_50','streams_100',
+    'hours_10','hours_100','hours_500',
+    'streak_7','streak_30',
+    'viewers_1k','viewers_10k',
+    'marathon','night_owl','early_bird'
+);
+
+CREATE TABLE IF NOT EXISTS achievements (
+    id                  SERIAL PRIMARY KEY,
+    streamer_id         INT             NOT NULL REFERENCES streamers(id) ON DELETE CASCADE,
+    achievement_type    achievementtype NOT NULL,
+    earned_at           TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    meta                JSONB,
+    CONSTRAINT uq_streamer_achievement UNIQUE (streamer_id, achievement_type)
+);
+
+CREATE INDEX IF NOT EXISTS ix_achievements_streamer ON achievements(streamer_id);
+
+-- ── Discord webhooks ──────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS discord_webhooks (
+    id                      SERIAL PRIMARY KEY,
+    name                    VARCHAR(255)    NOT NULL,
+    webhook_url             VARCHAR(500)    NOT NULL,
+    is_active               BOOLEAN         NOT NULL DEFAULT TRUE,
+    send_end_notifications  BOOLEAN         NOT NULL DEFAULT TRUE,
+    created_at              TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    created_by              BIGINT          REFERENCES users(id)
+);
+
 -- ============================================================
 -- Инициализация: строки поллинга для каждой платформы
 -- ============================================================
@@ -181,7 +216,7 @@ INSERT INTO polling_state (platform) VALUES ('twitch')  ON CONFLICT DO NOTHING;
 INSERT INTO polling_state (platform) VALUES ('vk')      ON CONFLICT DO NOTHING;
 
 -- ============================================================
--- Миграция: добавить новые колонки в существующую БД
+-- Миграция Sprint 1: добавить новые колонки в существующую БД
 -- (выполнить только если таблицы уже существуют)
 -- ============================================================
 -- ALTER TABLE streamers ADD COLUMN IF NOT EXISTS poll_priority INT NOT NULL DEFAULT 2;
@@ -190,3 +225,15 @@ INSERT INTO polling_state (platform) VALUES ('vk')      ON CONFLICT DO NOTHING;
 -- ALTER TABLE notifications ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
 -- ALTER TABLE notifications ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ;
 -- CREATE INDEX IF NOT EXISTS ix_notifications_retry ON notifications(status, retry_after) WHERE status = 'failed' AND retry_after IS NOT NULL;
+
+-- ============================================================
+-- Миграция Sprint 2: геймификация, Discord, стримерские поля
+-- (выполнить только если таблицы уже существуют)
+-- ============================================================
+-- ALTER TABLE streamers ADD COLUMN IF NOT EXISTS current_streak INT NOT NULL DEFAULT 0;
+-- ALTER TABLE streamers ADD COLUMN IF NOT EXISTS max_streak INT NOT NULL DEFAULT 0;
+-- ALTER TABLE streamers ADD COLUMN IF NOT EXISTS last_stream_date TIMESTAMPTZ;
+-- ALTER TABLE telegram_channels ADD COLUMN IF NOT EXISTS discord_webhook_url VARCHAR(500);
+-- CREATE TYPE achievementtype AS ENUM ('first_stream','streams_10','streams_50','streams_100','hours_10','hours_100','hours_500','streak_7','streak_30','viewers_1k','viewers_10k','marathon','night_owl','early_bird');
+-- CREATE TABLE IF NOT EXISTS achievements ( ... );  -- see full definition above
+-- CREATE TABLE IF NOT EXISTS discord_webhooks ( ... );  -- see full definition above

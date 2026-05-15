@@ -7,11 +7,12 @@ This is the heart of the system:
   - Handles cooldown window to avoid duplicate alerts on short stream restarts
   - Detects new platforms going live mid-session → edits existing notifications
   - Feature 1: sends "stream ended" notification when session closes
+  - Sprint 2: Gamification (streaks, achievements) + Discord webhook delivery
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,15 +23,27 @@ from db.repositories.stream_repo import PlatformStreamRepository, StreamReposito
 from integrations.base import StreamInfo
 from services.notification_service import NotificationService
 
+if TYPE_CHECKING:
+    from services.gamification_service import GamificationService
+    from services.discord_service import DiscordService
+
 logger = structlog.get_logger(__name__)
 
 
 class StreamService:
-    def __init__(self, session: AsyncSession, notification_service: NotificationService) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        notification_service: NotificationService,
+        gamification_service: Optional["GamificationService"] = None,
+        discord_service: Optional["DiscordService"] = None,
+    ) -> None:
         self._session = session
         self._stream_repo = StreamRepository(session)
         self._ps_repo = PlatformStreamRepository(session)
         self._notif = notification_service
+        self._gamification = gamification_service
+        self._discord = discord_service
 
     async def process_live_results(
         self,
@@ -100,6 +113,24 @@ class StreamService:
         # Reload with relationships for notification
         stream = await self._stream_repo.get_with_details(stream.id)
         await self._notif.send_stream_notification(stream)
+
+        # Sprint 2: Discord delivery
+        if self._discord:
+            try:
+                from db.models import Streamer
+                from services.template_service import PlatformLink
+                links = [
+                    PlatformLink(platform=ps.platform.value.capitalize(), url=ps.url)
+                    for ps in stream.platform_streams if ps.ended_at is None
+                ]
+                active_ps = [ps for ps in stream.platform_streams if ps.ended_at is None]
+                streamer_obj = await self._session.get(Streamer, streamer_id)
+                name = streamer_obj.display_name if streamer_obj else str(streamer_id)
+                thumb = active_ps[0].thumbnail_url if active_ps else None
+                await self._discord.notify_stream_live(stream, name, links, thumb)
+            except Exception as exc:
+                logger.warning("discord.live_notify_failed", stream_id=stream.id, error=str(exc))
+
         return stream
 
     async def _close_stream(self, stream: Stream) -> None:
@@ -122,6 +153,32 @@ class StreamService:
                 await self._notif.send_stream_end_notification(updated_stream)
             except Exception as exc:
                 logger.warning("stream.end_notification_failed", stream_id=stream.id, error=str(exc))
+
+            # Sprint 2: Gamification — update streak + check achievements
+            if self._gamification:
+                try:
+                    streak, is_new_max = await self._gamification.update_streak(stream.streamer_id)
+                    logger.info("gamification.streak", streamer_id=stream.streamer_id,
+                                streak=streak, is_new_max=is_new_max)
+                    newly_earned = await self._gamification.check_and_award(
+                        stream.streamer_id, stream=updated_stream
+                    )
+                    if newly_earned:
+                        logger.info("gamification.achievements_earned",
+                                    streamer_id=stream.streamer_id,
+                                    types=[a.value for a in newly_earned])
+                except Exception as exc:
+                    logger.warning("gamification.error", stream_id=stream.id, error=str(exc))
+
+            # Sprint 2: Discord end notification
+            if self._discord:
+                try:
+                    from db.models import Streamer
+                    streamer_obj = await self._session.get(Streamer, stream.streamer_id)
+                    name = streamer_obj.display_name if streamer_obj else str(stream.streamer_id)
+                    await self._discord.notify_stream_ended(updated_stream, name)
+                except Exception as exc:
+                    logger.warning("discord.end_notify_failed", stream_id=stream.id, error=str(exc))
 
     async def _update_stream(
         self,

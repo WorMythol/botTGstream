@@ -14,7 +14,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import health, streamers, streams
+from api.routers import discord, health, leaderboard, miniapp, streamers, streams
 from db.database import close_db, init_db
 
 logger = structlog.get_logger(__name__)
@@ -49,6 +49,9 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(streamers.router)
 app.include_router(streams.router)
+app.include_router(leaderboard.router)
+app.include_router(miniapp.router)
+app.include_router(discord.router)
 
 
 @app.get("/")
