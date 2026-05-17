@@ -2,6 +2,7 @@
 from typing import List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User, UserRole
@@ -31,13 +32,21 @@ class UserRepository(BaseRepository[User]):
         return list(result.scalars().all())
 
     async def upsert(self, telegram_id: int, username: Optional[str], full_name: str) -> User:
-        """Create user if not exists, update name/username if exists."""
-        user = await self.get_by_telegram_id(telegram_id)
-        if user is None:
-            user = User(id=telegram_id, username=username, full_name=full_name)
-            self.session.add(user)
-        else:
-            user.username = username
-            user.full_name = full_name
+        """Atomic upsert: INSERT … ON CONFLICT (id) DO UPDATE.
+
+        Eliminates the race condition where two concurrent requests from the
+        same user both SELECT → find nothing → both INSERT, causing a
+        UniqueViolationError on the primary key.
+        """
+        stmt = (
+            pg_insert(User)
+            .values(id=telegram_id, username=username, full_name=full_name)
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"username": username, "full_name": full_name},
+            )
+            .returning(User)
+        )
+        result = await self.session.execute(stmt)
         await self.session.flush()
-        return user
+        return result.scalar_one()
