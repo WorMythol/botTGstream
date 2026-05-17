@@ -129,7 +129,7 @@ class T:
     ADD_STREAMER_PLATFORM_NEED_ONE = "Сначала добавьте хотя бы одну платформу."
     ADD_STREAMER_DONE = (
         "✅ Стример *{name}* создан с {count} платформой(ами)!\n\n"
-        "Используйте /assign_channel для привязки к каналу уведомлений."
+        "Используйте /assign\\_channel для привязки к каналу уведомлений."
     )
     ADD_STREAMER_ENTER_URL = "Введите URL канала *{platform}*:"
     ADD_STREAMER_URL_ADDED = "✅ Добавлен {platform} URL.\n\nПлатформы:\n{list}\n\nДобавьте ещё или нажмите Готово:"
@@ -158,7 +158,7 @@ class T:
     ADD_CHANNEL_NOT_FOUND = (
         "❌ Канал не найден. Проверьте ID/username и убедитесь, что бот — администратор."
     )
-    ADD_CHANNEL_DONE = "✅ Канал *{title}* (`{chat_id}`) {verb}!\n\nИспользуйте /assign_channel для привязки стримеров."
+    ADD_CHANNEL_DONE = "✅ Канал *{title}* (`{chat_id}`) {verb}!\n\nИспользуйте /assign\\_channel для привязки стримеров."
     ADD_CHANNEL_ADDED = "добавлен"
     ADD_CHANNEL_UPDATED = "обновлён"
     NO_CHANNELS = "Каналы не зарегистрированы. Используйте /add_channel."
