@@ -76,7 +76,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # Telegram user ID
     username: Mapped[Optional[str]] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(255))
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.STREAMER)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole, values_callable=lambda x: [e.value for e in x]), default=UserRole.STREAMER)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -143,7 +143,7 @@ class PlatformAccount(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     streamer_id: Mapped[int] = mapped_column(Integer, ForeignKey("streamers.id", ondelete="CASCADE"))
-    platform: Mapped[Platform] = mapped_column(Enum(Platform))
+    platform: Mapped[Platform] = mapped_column(Enum(Platform, values_callable=lambda x: [e.value for e in x]))
     platform_id: Mapped[str] = mapped_column(String(255))      # channel/user/group ID
     platform_url: Mapped[str] = mapped_column(String(500))     # original URL supplied by admin
     platform_username: Mapped[Optional[str]] = mapped_column(String(255))  # resolved username
@@ -236,7 +236,7 @@ class Stream(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     streamer_id: Mapped[int] = mapped_column(Integer, ForeignKey("streamers.id", ondelete="CASCADE"))  # FIX C-4
-    status: Mapped[StreamStatus] = mapped_column(Enum(StreamStatus), default=StreamStatus.LIVE)
+    status: Mapped[StreamStatus] = mapped_column(Enum(StreamStatus, values_callable=lambda x: [e.value for e in x]), default=StreamStatus.LIVE)
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -267,7 +267,7 @@ class PlatformStream(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     stream_id: Mapped[int] = mapped_column(Integer, ForeignKey("streams.id", ondelete="CASCADE"))
-    platform: Mapped[Platform] = mapped_column(Enum(Platform))
+    platform: Mapped[Platform] = mapped_column(Enum(Platform, values_callable=lambda x: [e.value for e in x]))
     platform_stream_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     url: Mapped[str] = mapped_column(String(500))
@@ -291,13 +291,13 @@ class Notification(Base):
 
     # The platform this notification was sent through
     delivery_platform: Mapped[NotificationPlatform] = mapped_column(
-        Enum(NotificationPlatform), default=NotificationPlatform.TELEGRAM
+        Enum(NotificationPlatform, values_callable=lambda x: [e.value for e in x]), default=NotificationPlatform.TELEGRAM
     )
 
     # Message reference for editing/deletion
     telegram_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
-    status: Mapped[NotificationStatus] = mapped_column(Enum(NotificationStatus), default=NotificationStatus.PENDING)
+    status: Mapped[NotificationStatus] = mapped_column(Enum(NotificationStatus, values_callable=lambda x: [e.value for e in x]), default=NotificationStatus.PENDING)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     edited_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -334,7 +334,7 @@ class ApiCredential(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    platform: Mapped[Platform] = mapped_column(Enum(Platform))
+    platform: Mapped[Platform] = mapped_column(Enum(Platform, values_callable=lambda x: [e.value for e in x]))
     key_name: Mapped[str] = mapped_column(String(100))    # e.g. "api_key", "client_id"
     key_value: Mapped[str] = mapped_column(Text)          # Fernet-encrypted value
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -370,7 +370,7 @@ class Achievement(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     streamer_id: Mapped[int] = mapped_column(Integer, ForeignKey("streamers.id", ondelete="CASCADE"))
-    achievement_type: Mapped[AchievementType] = mapped_column(Enum(AchievementType))
+    achievement_type: Mapped[AchievementType] = mapped_column(Enum(AchievementType, values_callable=lambda x: [e.value for e in x]))
     earned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
