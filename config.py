@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     VK_GROUP_TOKEN: str = ""
     VK_GROUP_ID: int = 0            # numeric group ID (positive)
 
+    # ── Backup ────────────────────────────────────────────────────────────────
+    BACKUP_DIR: str = ""        # path to store pg_dump files; empty = disabled
+    BACKUP_KEEP_DAYS: int = 7   # delete backups older than N days
+
+    # ── Mini App ──────────────────────────────────────────────────────────────
+    MINIAPP_URL: str = ""       # public URL of the Mini App HTML file
+
     # ── Logging ───────────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # "json" or "text"
@@ -63,6 +70,11 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def validate_db_url(cls, v: str) -> str:
+        # Auto-fix: hosting providers often give postgres:// or postgresql://
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgresql://"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
         if not v.startswith("postgresql+asyncpg://"):
             raise ValueError("DATABASE_URL must use postgresql+asyncpg:// scheme")
         return v
