@@ -308,4 +308,10 @@ async def _run_webhook(bot: Bot, dp: Dispatcher) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
