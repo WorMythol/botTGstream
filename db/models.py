@@ -75,7 +75,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # Telegram user ID
     username: Mapped[Optional[str]] = mapped_column(String(255))
-    full_name: Mapped[str] = mapped_column(String(255))
+    full_name: Mapped[str] = mapped_column(String(255), server_default="")
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, values_callable=lambda x: [e.value for e in x]), default=UserRole.STREAMER)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -399,7 +399,7 @@ class PollingState(Base):
     __tablename__ = "polling_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    platform: Mapped[Platform] = mapped_column(Enum(Platform), unique=True)
+    platform: Mapped[Platform] = mapped_column(Enum(Platform, values_callable=lambda x: [e.value for e in x]), unique=True)
     last_poll_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # YouTube-specific quota tracking

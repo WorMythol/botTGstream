@@ -27,10 +27,35 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def init_db() -> None:
-    """Create all tables. Run once on startup (use Alembic for production migrations)."""
+    """Create all tables on startup.
+
+    If the environment variable DB_FORCE_RECREATE=true is set, all tables and
+    custom enum types are dropped first (destructive — use only on fresh deploys).
+    After recreation the variable is ignored on the next start — remove it from
+    the hosting panel once the bot is up.
+    """
+    import os
+    force_recreate = os.getenv("DB_FORCE_RECREATE", "").lower() in ("1", "true", "yes")
+
     async with engine.begin() as conn:
+        if force_recreate:
+            logger.warning("database.force_recreate.start — dropping all tables and enum types")
+            # Drop tables first (CASCADE handles FK order automatically)
+            await conn.run_sync(Base.metadata.drop_all)
+            # Also drop leftover custom enum types that SQLAlchemy may not track
+            enum_types = [
+                "userrole", "platform", "streamstatus",
+                "notificationplatform", "notificationstatus", "achievementtype",
+            ]
+            for t in enum_types:
+                await conn.execute(
+                    __import__("sqlalchemy").text(f"DROP TYPE IF EXISTS {t} CASCADE")
+                )
+            logger.warning("database.force_recreate.dropped")
+
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("database.initialized")
+
+    logger.info("database.initialized", force_recreate=force_recreate)
 
 
 async def close_db() -> None:
