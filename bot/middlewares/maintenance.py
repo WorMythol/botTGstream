@@ -16,15 +16,11 @@ import structlog
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
+from bot.texts import T
 from db.database import get_session
 from db.models import UserRole
 
 logger = structlog.get_logger(__name__)
-
-_MAINTENANCE_TEXT = (
-    "🔧 *Bot is under maintenance*\n\n"
-    "The service is temporarily unavailable. Please try again later."
-)
 
 
 class MaintenanceMiddleware(BaseMiddleware):
@@ -45,9 +41,9 @@ class MaintenanceMiddleware(BaseMiddleware):
 
             # Notify the user
             if isinstance(event, Message):
-                await event.answer(_MAINTENANCE_TEXT, parse_mode="Markdown")
+                await event.answer(T.MAINTENANCE_ACTIVE, parse_mode="Markdown")
             elif isinstance(event, CallbackQuery):
-                await event.answer("🔧 Bot is under maintenance. Try again later.", show_alert=True)
+                await event.answer(T.MAINTENANCE_ACTIVE_CALLBACK, show_alert=True)
             return  # block further processing
 
         return await handler(event, data)
