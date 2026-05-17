@@ -718,7 +718,6 @@ async def cmd_health(message: Message, db_user: User) -> None:
     from sqlalchemy import select
     from db.models import Platform, PollingState
     from bot.main import get_uptime_seconds
-    from scheduler.polling import get_twitch_client
 
     async with get_session() as session:
         result = await session.execute(select(PollingState))

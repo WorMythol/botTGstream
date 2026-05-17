@@ -15,21 +15,20 @@ from jinja2 import Environment, StrictUndefined, TemplateSyntaxError, UndefinedE
 logger = structlog.get_logger(__name__)
 
 DEFAULT_TEMPLATE = """\
-🔴 *{{ streamer_name }}* is LIVE!
+🔴 *{{ streamer_name }}* в эфире!
 
 {% if stream_title %}📺 {{ stream_title }}{% endif %}
-{% if viewer_count %}👥 {{ viewer_count | format_viewers }} viewers{% endif %}
+{% if viewer_count %}👥 {{ viewer_count | format_viewers }} зрителей{% endif %}
 
-Watch now:
 {% for link in platform_links %}▶️ [{{ link.platform | title }}]({{ link.url }})
 {% endfor %}"""
 
 # Feature 1: stream end template
 DEFAULT_END_TEMPLATE = """\
-⚫ *{{ streamer_name }}* finished the stream
+⚫ *{{ streamer_name }}* завершил стрим
 
-{% if duration_str %}⏱ Duration: {{ duration_str }}{% endif %}
-{% if peak_viewers %}👥 Peak viewers: {{ peak_viewers | format_viewers }}{% endif %}"""
+{% if duration_str %}⏱ Длительность: {{ duration_str }}{% endif %}
+{% if peak_viewers %}👥 Пик зрителей: {{ peak_viewers | format_viewers }}{% endif %}"""
 
 _jinja_env = Environment(undefined=StrictUndefined, autoescape=False)
 
@@ -61,8 +60,8 @@ def _format_duration(seconds: float) -> str:
     hours = total // 3600
     minutes = (total % 3600) // 60
     if hours > 0:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
+        return f"{hours}ч {minutes}м"
+    return f"{minutes}м"
 
 
 _jinja_env.filters["format_viewers"] = _format_viewers
@@ -150,7 +149,7 @@ def preview_template(
     return render_template(
         template_str=template_str,
         streamer_name=streamer_name,
-        stream_title="Sample Stream Title",
+        stream_title="Название стрима — предпросмотр",
         viewer_count=1337,
         platform_links=sample_links,
     )

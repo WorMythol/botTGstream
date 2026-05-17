@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.keyboards.inline import channels_list_keyboard, streamers_list_keyboard, back_keyboard
+from bot.keyboards.inline import channels_list_keyboard, streamers_list_keyboard
 from bot.states import EditTemplateStates
 from bot.texts import T
 from db.database import get_session
