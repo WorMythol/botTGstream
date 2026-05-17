@@ -23,6 +23,7 @@ from bot.middlewares.maintenance import MaintenanceMiddleware
 from config import settings
 from db.database import close_db, init_db
 from scheduler.polling import create_scheduler, set_bot_context
+from services.http_client import close_http_session
 from services.template_service import PlatformLink
 
 logger = structlog.get_logger(__name__)
@@ -269,11 +270,7 @@ async def main() -> None:
         scheduler.shutdown()
         await close_db()
         await bot.session.close()
-        # FIX m-3: close shared aiohttp session used by platform integrations
-        from scheduler.polling import get_http_session
-        http = get_http_session()
-        if not http.closed:
-            await http.close()
+        await close_http_session()  # shared aiohttp session (polling + discord + streamer_service)
         logger.info("bot.shutdown")
 
 

@@ -8,13 +8,9 @@ Features:
 """
 from __future__ import annotations
 
-import asyncio
-import csv
-import io
 from datetime import datetime, timezone
 from typing import Optional
 
-import aiohttp
 import structlog
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -34,8 +30,10 @@ from config import settings
 from db.database import get_session
 from db.models import Platform, User, UserRole
 from scheduler.polling import trigger_poll_for_streamer
+from services.admin_service import AdminService
 from services.analytics_service import AnalyticsService
 from services.channel_service import ChannelService
+from services.http_client import get_http_session
 from services.streamer_service import StreamerService
 from services.template_service import preview_template, validate_template
 
@@ -138,21 +136,18 @@ async def add_streamer_platform_choice(callback: CallbackQuery, state: FSMContex
         if not data.get("platforms"):
             await callback.answer("Add at least one platform first.", show_alert=True)
             return
-        # Create the streamer
+        # Create the streamer — use shared HTTP session (no per-request ClientSession)
         async with get_session() as session:
             svc = StreamerService(session)
             streamer = await svc.create_streamer(data["name"], callback.from_user.id)
-            http_session = aiohttp.ClientSession()
-            try:
-                for platform_str, url in data["platforms"].items():
-                    platform = Platform(platform_str)
-                    account, error = await svc.add_platform_account(
-                        streamer.id, platform, url, http_session
-                    )
-                    if error:
-                        logger.warning("add_streamer.platform_error", error=error)
-            finally:
-                await http_session.close()
+            http = get_http_session()
+            for platform_str, url in data["platforms"].items():
+                platform = Platform(platform_str)
+                account, error = await svc.add_platform_account(
+                    streamer.id, platform, url, http
+                )
+                if error:
+                    logger.warning("add_streamer.platform_error", error=error)
 
         await state.clear()
         await callback.message.edit_text(
@@ -806,70 +801,26 @@ async def cmd_export(message: Message, db_user: User) -> None:
         await message.answer("⛔ Admins only.")
         return
 
-    # Parse optional days argument
     args = message.text.split()
     try:
         days = int(args[1]) if len(args) > 1 else 30
-        days = max(1, min(days, 365))
     except ValueError:
         days = 30
 
     await message.answer(f"📤 Generating CSV for last {days} days...")
 
-    from datetime import timedelta
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from db.models import Stream, Streamer, PlatformStream, StreamStatus
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
     async with get_session() as session:
-        result = await session.execute(
-            select(Stream)
-            .options(
-                selectinload(Stream.streamer),
-                selectinload(Stream.platform_streams),
-            )
-            .where(Stream.started_at >= cutoff)
-            .order_by(Stream.started_at.desc())
-        )
-        streams = list(result.scalars().all())
+        svc = AdminService(session)
+        csv_bytes, record_count = await svc.export_streams_csv(days)
 
-    if not streams:
+    if record_count == 0:
         await message.answer(f"No streams found in the last {days} days.")
         return
 
-    # Build CSV in memory
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=[
-        "stream_id", "streamer", "status", "started_at", "ended_at",
-        "duration_min", "peak_viewers", "platforms", "notifications_sent",
-    ])
-    writer.writeheader()
-
-    for s in streams:
-        duration_min = None
-        if s.started_at and s.ended_at:
-            duration_min = round((s.ended_at - s.started_at).total_seconds() / 60, 1)
-        platforms = ", ".join(sorted({ps.platform.value for ps in (s.platform_streams or [])}))
-        writer.writerow({
-            "stream_id": s.id,
-            "streamer": s.streamer.display_name if s.streamer else "",
-            "status": s.status.value,
-            "started_at": s.started_at.strftime("%Y-%m-%d %H:%M:%S") if s.started_at else "",
-            "ended_at": s.ended_at.strftime("%Y-%m-%d %H:%M:%S") if s.ended_at else "",
-            "duration_min": duration_min or "",
-            "peak_viewers": s.peak_viewer_count or "",
-            "platforms": platforms,
-            "notifications_sent": "",  # avoid extra query for now
-        })
-
-    csv_bytes = output.getvalue().encode("utf-8-sig")  # UTF-8 BOM for Excel
     filename = f"streams_{datetime.now(timezone.utc).strftime('%Y%m%d')}_last{days}d.csv"
-
     await message.answer_document(
         document=BufferedInputFile(csv_bytes, filename=filename),
-        caption=f"📊 Stream history: {len(streams)} records, last {days} days",
+        caption=f"📊 Stream history: {record_count} records, last {days} days",
     )
 
 
@@ -917,51 +868,26 @@ async def apikey_value_input(message: Message, db_user: User, state: FSMContext)
     data = await state.get_data()
     await state.clear()
 
-    # Delete the user's message to avoid key leaks
+    # Delete the message immediately to avoid leaking the key in chat
     try:
         await message.delete()
     except Exception:
         pass
 
-    # FIX M-4: guard against empty ENCRYPTION_KEY before attempting Fernet
-    if not settings.ENCRYPTION_KEY:
-        await message.answer(
-            "❌ *ENCRYPTION\\_KEY* is not configured in `.env`.\n"
-            "Generate one and restart the bot before storing API credentials.",
-            parse_mode="Markdown",
-        )
-        return
-
-    from db.models import ApiCredential
-    from cryptography.fernet import Fernet
-    from sqlalchemy import select
-
     key_value = message.text.strip()
     platform = Platform(data["platform"])
     key_name = data["key_name"]
 
-    fernet = Fernet(settings.ENCRYPTION_KEY.encode())
-    encrypted = fernet.encrypt(key_value.encode()).decode()
-
     async with get_session() as session:
-        result = await session.execute(
-            select(ApiCredential).where(
-                ApiCredential.platform == platform,
-                ApiCredential.key_name == key_name,
+        svc = AdminService(session)
+        try:
+            await svc.upsert_api_credential(platform, key_name, key_value, db_user.id)
+        except ValueError as exc:
+            await message.answer(
+                f"❌ {exc}",
+                parse_mode="Markdown",
             )
-        )
-        cred = result.scalar_one_or_none()
-        if cred:
-            cred.key_value = encrypted
-            cred.updated_by = db_user.id
-        else:
-            cred = ApiCredential(
-                platform=platform,
-                key_name=key_name,
-                key_value=encrypted,
-                updated_by=db_user.id,
-            )
-            session.add(cred)
+            return
 
     await message.answer(
         f"✅ *{platform.value.upper()}* `{key_name}` updated securely.\n\n"

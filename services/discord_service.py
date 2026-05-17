@@ -15,12 +15,12 @@ import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional, Any
 
-import aiohttp
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import DiscordWebhook, Stream
+from services.http_client import get_http_session
 from services.template_service import PlatformLink
 
 logger = structlog.get_logger(__name__)
@@ -28,8 +28,6 @@ logger = structlog.get_logger(__name__)
 _COLOUR_LIVE = 0x57F287   # green
 _COLOUR_END  = 0xED4245   # red
 _COLOUR_INFO = 0x5865F2   # blurple
-
-_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
 class DiscordService:
@@ -231,10 +229,10 @@ def _build_end_embed(
 # ── HTTP helper ────────────────────────────────────────────────────────────────
 
 async def _post_embed(url: str, embed: dict) -> None:
-    """POST a single embed to a Discord webhook URL."""
+    """POST a single embed to a Discord webhook URL using the shared HTTP session."""
     payload = {"embeds": [embed]}
-    async with aiohttp.ClientSession(timeout=_TIMEOUT) as http:
-        async with http.post(url, json=payload) as resp:
-            if resp.status not in (200, 204):
-                body = await resp.text()
-                raise RuntimeError(f"Discord returned {resp.status}: {body[:200]}")
+    http = get_http_session()
+    async with http.post(url, json=payload) as resp:
+        if resp.status not in (200, 204):
+            body = await resp.text()
+            raise RuntimeError(f"Discord returned {resp.status}: {body[:200]}")
