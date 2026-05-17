@@ -34,8 +34,7 @@ async def init_db() -> None:
     After recreation the variable is ignored on the next start — remove it from
     the hosting panel once the bot is up.
     """
-    import os
-    force_recreate = os.getenv("DB_FORCE_RECREATE", "").lower() in ("1", "true", "yes")
+    force_recreate = settings.DB_FORCE_RECREATE
 
     async with engine.begin() as conn:
         if force_recreate:

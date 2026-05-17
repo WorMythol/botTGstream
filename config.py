@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # "json" or "text"
 
+    # ── DB maintenance ────────────────────────────────────────────────────────
+    # Set to true ONCE to drop all tables and recreate from scratch.
+    # DANGER: destroys all data. Remove after first successful start.
+    DB_FORCE_RECREATE: bool = False
+
     @field_validator("DATABASE_URL")
     @classmethod
     def validate_db_url(cls, v: str) -> str:
