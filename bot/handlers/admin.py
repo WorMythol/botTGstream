@@ -418,24 +418,18 @@ async def cmd_add_channel(message: Message, db_user: User, state: FSMContext) ->
 
 @router.message(AddChannelStates.waiting_channel_id)
 async def add_channel_input(message: Message, db_user: User, state: FSMContext) -> None:
-    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
     bot = message.bot
 
-    # Accept forwarded messages from channels
+    # Accept forwarded messages from channels — no API call needed
     if message.forward_from_chat:
-        chat = message.forward_from_chat
-        chat_id = chat.id
-        title = chat.title
-        username = chat.username
+        chat_id = message.forward_from_chat.id
+        title    = message.forward_from_chat.title or str(chat_id)
+        username = message.forward_from_chat.username
     else:
         raw = message.text.strip()
-        # Resolve @username or numeric ID
         try:
-            chat = await bot.get_chat(raw)
-            chat_id = chat.id
-            title = chat.title or raw
-            username = chat.username
-        except (TelegramBadRequest, TelegramForbiddenError):
+            chat_id, title, username = await _resolve_chat(bot, raw)
+        except Exception:
             await message.answer(T.ADD_CHANNEL_NOT_FOUND)
             return
 
@@ -449,6 +443,45 @@ async def add_channel_input(message: Message, db_user: User, state: FSMContext) 
         T.ADD_CHANNEL_DONE.format(title=title, chat_id=chat_id, verb=verb),
         parse_mode="Markdown",
     )
+
+
+async def _resolve_chat(bot, chat_id_or_username: str) -> tuple[int, str, str | None]:
+    """Resolve a channel by username / numeric ID.
+
+    First tries aiogram's get_chat(); if Telegram returns types unknown to the
+    current aiogram version (e.g. ReactionTypePaid added in Bot API 8.3) and
+    aiogram raises ClientDecodeError, falls back to a raw HTTP call so we can
+    still extract the fields we actually need (id, title, username).
+    """
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, ClientDecodeError
+
+    try:
+        chat = await bot.get_chat(chat_id_or_username)
+        return chat.id, chat.title or str(chat.id), chat.username
+
+    except (TelegramBadRequest, TelegramForbiddenError):
+        raise  # channel not found / bot not admin — let caller handle
+
+    except ClientDecodeError:
+        # aiogram can't parse the response (unknown Telegram type in the payload).
+        # Fall back to a raw HTTP request and pull only what we need.
+        logger.warning(
+            "add_channel.get_chat_decode_error — falling back to raw HTTP",
+            chat=chat_id_or_username,
+        )
+        http = get_http_session()
+        token = bot.token
+        async with http.get(
+            f"https://api.telegram.org/bot{token}/getChat",
+            params={"chat_id": chat_id_or_username},
+        ) as resp:
+            data = await resp.json()
+
+        if not data.get("ok"):
+            raise ValueError(data.get("description", "getChat failed"))
+
+        r = data["result"]
+        return int(r["id"]), r.get("title") or str(r["id"]), r.get("username")
 
 
 @router.message(Command("list_channels"))
