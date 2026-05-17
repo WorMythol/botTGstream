@@ -37,6 +37,10 @@ class UserRepository(BaseRepository[User]):
         Eliminates the race condition where two concurrent requests from the
         same user both SELECT → find nothing → both INSERT, causing a
         UniqueViolationError on the primary key.
+
+        After the core-level upsert, session.get() loads the ORM object from
+        the identity map (no extra SELECT if already cached, one SELECT
+        otherwise) so we always return a properly tracked User instance.
         """
         stmt = (
             pg_insert(User)
@@ -45,8 +49,12 @@ class UserRepository(BaseRepository[User]):
                 index_elements=["id"],
                 set_={"username": username, "full_name": full_name},
             )
-            .returning(User)
         )
-        result = await self.session.execute(stmt)
+        await self.session.execute(stmt)
         await self.session.flush()
+        # Re-fetch via SELECT so we always get a fresh, session-tracked ORM object.
+        # (Core-level pg_insert doesn't populate the ORM identity map.)
+        result = await self.session.execute(
+            select(User).where(User.id == telegram_id)
+        )
         return result.scalar_one()
